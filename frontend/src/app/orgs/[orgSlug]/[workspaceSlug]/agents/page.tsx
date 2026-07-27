@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { PlusOutlined, SearchOutlined } from '@ant-design/icons';
-import { Avatar, Button, Card, Flex, Input, Segmented, Table, Tooltip, Typography } from 'antd';
+import { Avatar, Button, Card, Flex, Segmented, Table, Tooltip, Typography } from 'antd';
+import { SearchInput } from '@/components/common/SearchInput';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { LatencyBadge } from '@/components/common/LatencyBadge';
@@ -148,14 +149,7 @@ export default function AgentsPage() {
 
       <Card size="small" styles={{ body: { padding: 0 } }}>
         <Flex gap={10} align="center" wrap style={{ padding: 12 }}>
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            placeholder="Search agents"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ maxWidth: 260 }}
-          />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search agents" />
           <Segmented<StatusFilter>
             value={status}
             onChange={setStatus}

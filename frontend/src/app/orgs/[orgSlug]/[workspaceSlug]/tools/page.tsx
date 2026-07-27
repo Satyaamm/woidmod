@@ -4,7 +4,8 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { PlusOutlined, SearchOutlined, ThunderboltOutlined, ToolOutlined } from '@ant-design/icons';
-import { App, Button, Card, Flex, Input, Table, Tag, Tooltip, Typography } from 'antd';
+import { App, Button, Card, Flex, Table, Tag, Tooltip, Typography } from 'antd';
+import { SearchInput } from '@/components/common/SearchInput';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -158,14 +159,7 @@ function ToolsInner() {
 
       <Card size="small" styles={{ body: { padding: 0 } }}>
         <Flex gap={10} align="center" wrap style={{ padding: 12 }}>
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            placeholder="Search tools"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ maxWidth: 260 }}
-          />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search tools" />
         </Flex>
 
         <AsyncBoundary

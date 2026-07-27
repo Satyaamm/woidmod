@@ -10,11 +10,13 @@ import { agentApi, numberApi } from '@/lib/api';
 import { useCurrentScope } from '@/lib/scope';
 import { BuyNumberModal } from '@/features/telephony/BuyNumberModal';
 import { NumbersTable } from '@/features/telephony/NumbersTable';
+import { SearchInput } from '@/components/common/SearchInput';
 
 export default function NumbersPage() {
   const { workspace } = useCurrentScope();
   const [refreshKey, setRefreshKey] = useState(0);
   const [buyOpen, setBuyOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const bump = () => setRefreshKey((k) => k + 1);
 
   // Agents are a small, unpaginated lookup used to render + set assignments.
@@ -39,11 +41,13 @@ export default function NumbersPage() {
 
       {workspace ? (
         <NumbersTable
-          fetcher={({ page, pageSize }) => numberApi.list(workspace.id, { page, pageSize })}
+          fetcher={({ page, pageSize }) => numberApi.list(workspace.id, { page, pageSize, search })}
           agents={agents.data ?? []}
           workspaceId={workspace.id}
           refreshToken={refreshKey}
           onMutated={bump}
+          searchTerm={search}
+          toolbar={<SearchInput value={search} onChange={setSearch} placeholder="Search numbers" />}
         />
       ) : (
         <TableSkeleton rows={8} columns={9} />

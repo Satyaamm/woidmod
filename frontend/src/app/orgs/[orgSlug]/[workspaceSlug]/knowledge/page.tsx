@@ -4,7 +4,8 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { DatabaseOutlined, PlusOutlined, SearchOutlined, SyncOutlined } from '@ant-design/icons';
-import { App, Button, Card, Flex, Input, Segmented, Table, Tooltip, Typography } from 'antd';
+import { App, Button, Card, Flex, Segmented, Table, Tooltip, Typography } from 'antd';
+import { SearchInput } from '@/components/common/SearchInput';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -167,14 +168,7 @@ function KnowledgeInner() {
 
       <Card size="small" styles={{ body: { padding: 0 } }}>
         <Flex gap={10} align="center" wrap style={{ padding: 12 }}>
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            placeholder="Search sources"
-            value={search}
-            onChange={(e) => setParam('q', e.target.value)}
-            style={{ maxWidth: 260 }}
-          />
+          <SearchInput value={search} onChange={(v) => setParam('q', v)} placeholder="Search sources" />
           <Segmented<TypeFilter>
             value={typeFilter}
             onChange={(v) => setParam('type', v)}

@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import Link from 'next/link';
 import { App, Button, Flex, Popconfirm, Table, Tooltip, Typography } from 'antd';
+import { SearchInput } from '@/components/common/SearchInput';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { TableSkeleton } from '@/components/common/Skeletons';
@@ -37,16 +38,17 @@ export function CampaignsTable({
   const { message } = App.useApp();
   const scope = useScope();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   const refresh = onRefresh;
 
-  // Centralized pagination: page 1 on workspace change, refetch in place on `refreshKey`.
+  // Centralized pagination: page 1 on workspace/search change, refetch in place on `refreshKey`.
   const paginated = usePaginated<Campaign>(
     ({ page, pageSize }) =>
       workspaceId
-        ? campaignApi.list(workspaceId, { page, pageSize })
+        ? campaignApi.list(workspaceId, { page, pageSize, search })
         : Promise.resolve({ items: [], total: 0, page, pageSize }),
-    { pageSize: PAGE_SIZE, resetDeps: [workspaceId], refreshToken: refreshKey },
+    { pageSize: PAGE_SIZE, resetDeps: [workspaceId, search], refreshToken: refreshKey },
   );
   const state = paginated.state;
 
@@ -209,6 +211,9 @@ export function CampaignsTable({
 
   return (
     <>
+      <Flex style={{ marginBottom: 12 }}>
+        <SearchInput value={search} onChange={setSearch} placeholder="Search campaigns" />
+      </Flex>
       <AsyncBoundary
         state={state}
         skeleton={<TableSkeleton rows={8} columns={6} />}

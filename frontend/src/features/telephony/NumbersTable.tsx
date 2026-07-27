@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { DeleteOutlined, ReloadOutlined } from '@ant-design/icons';
 import { App, Button, Empty, Flex, Popconfirm, Tooltip, Typography } from 'antd';
@@ -31,6 +31,8 @@ export function NumbersTable({
   workspaceId,
   refreshToken,
   onMutated,
+  toolbar,
+  searchTerm,
 }: {
   fetcher: (params: { page: number; pageSize: number }) => Promise<Paginated<PhoneNumber>>;
   agents: Agent[];
@@ -38,6 +40,10 @@ export function NumbersTable({
   /** Bumped by the page after a purchase; refetches the current page. */
   refreshToken: unknown;
   onMutated: () => void;
+  /** Optional search box rendered above the table. */
+  toolbar?: ReactNode;
+  /** Search term — changing it returns to page 1. */
+  searchTerm?: string;
 }) {
   const { message } = App.useApp();
   const scope = useScope();
@@ -175,8 +181,9 @@ export function NumbersTable({
       fetcher={fetcher}
       columns={columns}
       rowKey="id"
+      toolbar={toolbar}
       refreshToken={refreshToken}
-      resetDeps={[workspaceId]}
+      resetDeps={[workspaceId, searchTerm]}
       scroll={{ x: 1300 }}
       skeletonRows={8}
       empty={
