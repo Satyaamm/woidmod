@@ -102,6 +102,7 @@ class VoiceAgent(Agent):
         avatar: Optional[AvatarOutput] = None,
         knowledge: Optional[list] = None,
         tools: Optional[list] = None,
+        retrieve_ctx: Optional[dict] = None,
     ) -> None:
         # Registering tools here is what lets the LLM actually call them; the base
         # class threads them into every llm_node invocation.
@@ -111,8 +112,12 @@ class VoiceAgent(Agent):
         self._speculative_prefill = speculative_prefill
         self._agent_id = agent_id
         # Workspace KB chunks for grounding (RAG). Empty = the agent answers
-        # ungrounded. Retrieval is per-turn and in-process (see retrieval.py).
+        # ungrounded. Retrieval prefers the control-plane semantic endpoint
+        # (embeddings + vector store) when `retrieve_ctx` is set, else in-process lexical.
         self._knowledge = knowledge or []
+        self._retrieve_ctx = retrieve_ctx
+        # The caller's most recent answer — used to route collect/verify flow nodes.
+        self._last_answer = ""
         # When present, the agent is flow-driven: the graph decides what each turn is
         # about and routes on the caller's answers. None = pure prompt mode.
         self._flow = flow_engine
@@ -170,6 +175,7 @@ class VoiceAgent(Agent):
         self._timing = TurnTiming(turn_index=self._turn_index, commit_at=time.monotonic())
         self._spoken_chars = 0
         self._generated_text = ""
+        self._last_answer = getattr(new_message, "text_content", None) or ""
         self._detector.begin_turn()
         self._trace.emit(
             "endpoint.commit",
@@ -184,19 +190,32 @@ class VoiceAgent(Agent):
         """Advance the flow past the node the caller just answered, routing through any
         condition nodes to the next conversational/terminal node.
 
-        Slot extraction (collect → filled vs failed) and tool execution land with the
-        live LLM/tool path; here a collect/verify/escalate advances on its success exit,
-        which is the common case and keeps the state machine moving on a real call."""
+        Slot extraction routes on the caller's actual answer: a `collect` node advances
+        on `filled` only when the caller gave a substantive answer (not silence or a
+        refusal), and a `verify` node on `passed` only when they affirmed. A real LLM
+        slot-extractor is the next step; this is already a real routing decision, not a
+        blind success."""
         flow = self._flow
         if not flow or flow.finished:
             return
         node = flow.current()
+        tokens = re.findall(r"[a-z0-9]+", self._last_answer.lower())
         if node.type == "condition":
             handle: Optional[str] = flow.route_condition()
         elif node.type == "collect":
-            handle = "filled"
+            # Filled unless the caller said nothing, or only a refusal ("no", "skip").
+            _REFUSAL = {"no", "nope", "skip", "nothing", "none", "dunno"}
+            substantive = bool(tokens) and not (len(tokens) <= 2 and set(tokens) <= _REFUSAL)
+            handle = "filled" if substantive else "failed"
         elif node.type == "verify":
-            handle = "passed"
+            _AFFIRM = {"yes", "yeah", "yep", "correct", "right", "sure", "confirm", "ok", "okay"}
+            _DENY = {"no", "nope", "wrong", "incorrect"}
+            if any(t in _AFFIRM for t in tokens):
+                handle = "passed"
+            elif any(t in _DENY for t in tokens):
+                handle = "failed"
+            else:
+                handle = "passed" if tokens else "failed"
         elif node.type == "escalate_video":
             handle = "accepted"
         else:
@@ -239,7 +258,7 @@ class VoiceAgent(Agent):
         # ephemeral system notes shape THIS reply only and never accumulate in history.
         inject_vision = self._vision is not None and bool(self._vision.latest_scene)
         query = self._last_user_text(chat_ctx) if self._knowledge else ""
-        hits = top_chunks(query, self._knowledge, k=3) if query else []
+        hits = await self._retrieve(query) if query else []
 
         if inject_vision or hits:
             chat_ctx = chat_ctx.copy()
@@ -311,6 +330,36 @@ class VoiceAgent(Agent):
             cachedTokens=timing.cached_tokens,
             completionTokens=timing.completion_tokens,
         )
+
+    async def _retrieve(self, query: str) -> list:
+        """Top-k knowledge for grounding. Prefers the control-plane semantic endpoint
+        (embeddings + vector store); falls back to in-process lexical on any error, so
+        a slow or down control plane degrades recall but never breaks the turn."""
+        ctx = self._retrieve_ctx
+        if ctx:
+            try:
+                import aiohttp
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{ctx['url'].rstrip('/')}/v1/knowledge/retrieve",
+                        json={"query": query, "topK": 3},
+                        headers={
+                            "authorization": f"Bearer {ctx['api_key']}",
+                            "x-workspace-id": ctx["workspace_id"],
+                        },
+                        timeout=aiohttp.ClientTimeout(total=2),
+                    ) as res:
+                        if res.status == 200:
+                            hits = (await res.json()).get("hits", [])
+                            if hits:
+                                return [
+                                    {"sourceName": h.get("sourceName", "doc"), "text": h.get("text", "")}
+                                    for h in hits
+                                ]
+            except Exception:  # noqa: BLE001 - retrieval is best-effort
+                pass
+        return top_chunks(query, self._knowledge, k=3)
 
     def _last_user_text(self, chat_ctx: ChatContext) -> str:
         """The caller's most recent message — the query we retrieve against."""

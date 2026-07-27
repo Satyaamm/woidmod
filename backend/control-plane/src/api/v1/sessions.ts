@@ -29,6 +29,32 @@ export function sessionVoiceRoutes(container: Container) {
     // does neither. They are deliberately separate permissions.
     require_(scope, body.mode === 'live' ? 'call:place_live' : 'call:place_test');
 
+    // Spend caps gate LIVE calls only (test mode has no spend). A runaway campaign
+    // in one workspace must not be able to bill past the limit its admins set.
+    if (body.mode === 'live') {
+      const workspace = await container.services.workspaces.get(scope, scope.workspaceId);
+      const caps = workspace.spendCaps;
+      if (caps.dailyUsd || caps.monthlyUsd) {
+        const page = await container.services.calls.list(scope, { pageSize: 500 });
+        const now = new Date();
+        const startDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const startMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        let day = 0;
+        let month = 0;
+        for (const call of page.items) {
+          const t = new Date(call.startedAt).getTime();
+          if (t >= startMonth) month += call.costUsd;
+          if (t >= startDay) day += call.costUsd;
+        }
+        if (caps.dailyUsd && day >= caps.dailyUsd) {
+          return c.json({ error: 'spend_cap', message: `Daily spend cap of $${caps.dailyUsd} reached.` }, 402);
+        }
+        if (caps.monthlyUsd && month >= caps.monthlyUsd) {
+          return c.json({ error: 'spend_cap', message: `Monthly spend cap of $${caps.monthlyUsd} reached.` }, 402);
+        }
+      }
+    }
+
     // 404s if the agent isn't in this workspace — the scope check, not a filter.
     const agent = await container.services.agents.get(scope, c.req.param('id'));
 

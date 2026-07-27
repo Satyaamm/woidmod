@@ -51,6 +51,12 @@ const envSchema = z.object({
   // Local dev only: return the email-verification code in the signup response.
   AUTH_EXPOSE_CODES: bool(false),
 
+  // -- SSO (OAuth 2.0 / OIDC) — optional; a provider is live only when BOTH id+secret set.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
+  MICROSOFT_OAUTH_CLIENT_ID: z.string().optional(),
+  MICROSOFT_OAUTH_CLIENT_SECRET: z.string().optional(),
+
   // -- RAG: pluggable vector store (bring your own) ---------------------------
   // Embeddings use the workspace's BYOK OpenAI key; the vector store is a
   // deployment choice. 'memory' (default) needs nothing; the others need creds.

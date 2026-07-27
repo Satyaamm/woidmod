@@ -11,7 +11,8 @@
  * rule in here that looks like policy is a call into a service, by design.
  */
 
-import { isProduction } from '../../config.js';
+import { config, isProduction } from '../../config.js';
+import { randomBytes } from 'node:crypto';
 import type { Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
@@ -251,6 +252,92 @@ export function registerAuthRoutes(app: AuthApp, container: AuthContainer): void
     const { code } = mfaCodeInput.parse(await c.req.json());
     await auth.disableMfa(userId, code);
     return c.json({ ok: true });
+  });
+
+  // -- SSO (OAuth 2.0 / OIDC) ------------------------------------------------
+  const SSO_PROVIDERS: Record<
+    string,
+    { authUrl: string; tokenUrl: string; userinfoUrl: string; scope: string; id?: string; secret?: string }
+  > = {
+    google: {
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      userinfoUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
+      scope: 'openid email profile',
+      id: config.GOOGLE_OAUTH_CLIENT_ID,
+      secret: config.GOOGLE_OAUTH_CLIENT_SECRET,
+    },
+    microsoft: {
+      authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+      tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      userinfoUrl: 'https://graph.microsoft.com/oidc/userinfo',
+      scope: 'openid email profile',
+      id: config.MICROSOFT_OAUTH_CLIENT_ID,
+      secret: config.MICROSOFT_OAUTH_CLIENT_SECRET,
+    },
+  };
+  const appUrl = () => (config.PUBLIC_BASE_URL || `http://localhost:${config.PORT}`).replace(/\/$/, '');
+  const dashboardUrl = () => config.DASHBOARD_ORIGIN || 'http://localhost:3100';
+  const redirectUri = (provider: string) => `${appUrl()}/auth/sso/${provider}/callback`;
+
+  /** Kick off SSO: redirect to the provider. 400 when that provider isn't configured. */
+  get('/auth/sso/:provider', async (c) => {
+    const provider = c.req.param('provider') ?? '';
+    const p = SSO_PROVIDERS[provider];
+    if (!p || !p.id || !p.secret) {
+      return c.json({ error: 'sso_not_configured', message: 'SSO is not configured for this provider.' }, 400);
+    }
+    const state = randomBytes(16).toString('hex');
+    setCookie(c, 'vai_sso_state', state, { httpOnly: true, path: '/', maxAge: 600, sameSite: 'Lax' });
+    const url = new URL(p.authUrl);
+    url.searchParams.set('client_id', p.id);
+    url.searchParams.set('redirect_uri', redirectUri(provider));
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('scope', p.scope);
+    url.searchParams.set('state', state);
+    return c.redirect(url.toString());
+  });
+
+  /** Provider callback: validate state, exchange code, resolve the user, set session. */
+  get('/auth/sso/:provider/callback', async (c) => {
+    const provider = c.req.param('provider') ?? '';
+    const p = SSO_PROVIDERS[provider];
+    if (!p || !p.id || !p.secret) {
+      return c.json({ error: 'sso_not_configured' }, 400);
+    }
+    const url = new URL(c.req.url);
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    if (!code || !state || state !== getCookie(c, 'vai_sso_state')) {
+      throw new AuthenticationError('SSO state check failed — please try again.', 'session_invalid', 400);
+    }
+    const tokenRes = await fetch(p.tokenUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: p.id,
+        client_secret: p.secret,
+        redirect_uri: redirectUri(provider),
+        grant_type: 'authorization_code',
+      }),
+    });
+    if (!tokenRes.ok) throw new AuthenticationError('SSO token exchange failed.', 'invalid_credentials', 400);
+    const tokens = (await tokenRes.json()) as { access_token?: string };
+    const infoRes = await fetch(p.userinfoUrl, {
+      headers: { authorization: `Bearer ${tokens.access_token ?? ''}` },
+    });
+    const info = (await infoRes.json()) as { email?: string };
+    if (!info.email) throw new AuthenticationError('SSO provider returned no email.', 'invalid_credentials', 400);
+
+    const result = await auth.signInWithSso({
+      email: info.email,
+      userAgent: c.req.header('user-agent'),
+      ip: clientIp(c.req.raw),
+    });
+    writeSessionCookie(c, result.session);
+    deleteCookie(c, 'vai_sso_state', { path: '/' });
+    return c.redirect(dashboardUrl());
   });
 
   /** Lightweight "who am I" for the app shell. 401 when unauthenticated. */

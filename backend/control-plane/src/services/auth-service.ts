@@ -588,6 +588,46 @@ export class AuthService {
 
   // -- Login ---------------------------------------------------------------
 
+  /**
+   * Sign in via an external identity provider (SSO). The IdP has vouched for the
+   * email, so there is no password step: an existing user gets a session against
+   * their first org (like login); a new email is provisioned exactly like signup
+   * (org + workspace + sample agent) with a random unusable password.
+   */
+  async signInWithSso(input: {
+    email: string;
+    userAgent?: string;
+    ip?: string;
+  }): Promise<{ user: User; session: IssuedSession; orgId: string }> {
+    const email = input.email.toLowerCase();
+    const existing = await this.deps.users.findByEmail(email);
+    if (existing) {
+      const memberships = await this.deps.memberships.listForUser(existing.id);
+      const chosen = memberships[0];
+      if (!chosen) {
+        throw new AuthenticationError('no organization for this account', 'invalid_credentials', 403);
+      }
+      const session = await this.issueSession(existing.id, chosen.orgId, {
+        userAgent: input.userAgent,
+        ip: input.ip,
+      });
+      await this.deps.audit?.record(
+        { orgId: chosen.orgId, workspaceId: null, userId: existing.id },
+        'auth.login',
+        { resourceType: 'user', resourceId: existing.id, metadata: { sso: true } },
+      );
+      return { user: existing, session, orgId: chosen.orgId };
+    }
+    // New user — provision like signup; the random password is never used (SSO-only).
+    const result = await this.signup({
+      email,
+      password: randomBytes(24).toString('hex'),
+      userAgent: input.userAgent,
+      ip: input.ip,
+    });
+    return { user: result.user, session: result.session, orgId: result.organization.id };
+  }
+
   async login(
     email: string,
     password: string,

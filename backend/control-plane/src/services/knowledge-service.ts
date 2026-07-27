@@ -570,6 +570,52 @@ export class KnowledgeService {
     };
   }
 
+  /**
+   * Workspace-wide retrieval for in-call grounding: semantic (embeddings + vector
+   * store) when configured, else lexical over the corpus. Returns top-k chunks.
+   */
+  async retrieve(
+    scope: WorkspaceScope,
+    query: string,
+    topK = 5,
+  ): Promise<Array<{ sourceId: string; sourceName: string; text: string; score: number }>> {
+    require_(scope, 'knowledge:read');
+    if (!query.trim()) return [];
+
+    if (this.rag.vectorStore && this.rag.embedderFor) {
+      try {
+        const embedder = await this.rag.embedderFor(scope);
+        if (embedder) {
+          const [qv] = await embedder.embed([query]);
+          if (qv) {
+            const hits = await this.rag.vectorStore.query(scope.workspaceId, qv, topK);
+            if (hits.length) {
+              return hits.map((h) => ({ sourceId: h.sourceId, sourceName: h.sourceName, text: h.text, score: h.score }));
+            }
+          }
+        }
+      } catch {
+        /* fall through to lexical */
+      }
+    }
+
+    // Lexical fallback: token-overlap score over the corpus.
+    const q = new Set(tokenize(query));
+    if (!q.size) return [];
+    const scored = (await this.corpus(scope))
+      .map((c) => {
+        const t = new Set(tokenize(c.text));
+        let overlap = 0;
+        for (const w of q) if (t.has(w)) overlap++;
+        const score = t.size ? overlap / Math.sqrt(q.size * t.size) : 0;
+        return { ...c, score };
+      })
+      .filter((c) => c.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+    return scored;
+  }
+
   /** Embed the chunks into the vector store (best-effort; lexical survives failure). */
   private async embedAndStore(
     scope: WorkspaceScope,

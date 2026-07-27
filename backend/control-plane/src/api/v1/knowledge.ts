@@ -41,6 +41,15 @@ export function knowledgeRoutes(service: KnowledgeService) {
     return c.json(await service.byId(scope, c.req.param('sourceId')));
   });
 
+  /** POST /knowledge/retrieve — workspace-wide top-k for in-call grounding (semantic
+   *  when a vector store + embeddings key are configured, else lexical). */
+  app.post('/knowledge/retrieve', async (c) => {
+    const scope = requireWorkspace(c.get('scope'));
+    const body = (await c.req.json().catch(() => ({}))) as { query?: string; topK?: number };
+    const hits = await service.retrieve(scope, String(body.query ?? ''), Math.min(Math.max(1, body.topK ?? 5), 20));
+    return c.json({ hits });
+  });
+
   /** PATCH /knowledge/:sourceId */
   app.patch('/knowledge/:sourceId', async (c) => {
     const scope = requireWorkspace(c.get('scope'));

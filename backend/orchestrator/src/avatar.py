@@ -37,6 +37,11 @@ class WaveformAvatar:
     """The tier-1 renderer: an audio-reactive waveform / branded card. Always available,
     no model needed — the honest default until a real avatar is configured."""
 
+    # A real renderer (2D avatar / photoreal) sets this True so the orchestrator
+    # publishes its track. This placeholder renders nothing yet, so it stays False —
+    # publishing a source it never writes to would show the caller a black tile.
+    produces_frames = False
+
     def __init__(self, publish_frame: Callable[[object], Awaitable[None]]) -> None:
         self._publish = publish_frame
 
@@ -72,6 +77,12 @@ class AvatarOutput:
     @property
     def active(self) -> bool:
         return self._enabled
+
+    @property
+    def renders_frames(self) -> bool:
+        """True only when the bound renderer actually produces video frames — gates
+        whether the orchestrator publishes an avatar track at all."""
+        return bool(getattr(self._renderer, "produces_frames", False))
 
     def set_enabled(self, enabled: bool) -> None:
         """An `avatar` flow node can turn the face on/off mid-call."""

@@ -172,6 +172,13 @@ async def entrypoint(ctx: JobContext) -> None:
         vision=vision,
         knowledge=config.knowledge,
         tools=build_tools(config.tools, trace),
+        # Lets the agent use the control-plane's semantic retrieval endpoint per turn
+        # (embeddings + vector store), falling back to in-process lexical.
+        retrieve_ctx=(
+            {"url": CONTROL_PLANE_URL, "api_key": config.api_key, "workspace_id": config.workspace_id}
+            if config.workspace_id and config.api_key
+            else None
+        ),
     )
 
     # Build the pipeline from the agent's SELECTED providers (BYOK), not a hardcoded
@@ -322,7 +329,12 @@ async def _wire_video_tracks(ctx: JobContext, vision, avatar, trace) -> None:
             log.debug("no pre-existing video tracks: %s", exc)
 
     # -- Avatar: publish the agent's talking-head video track -----------------
-    if avatar is not None:
+    # Only publish when the renderer actually produces frames. The tier-1
+    # WaveformAvatar is a no-op today, and publishing a source it never writes to
+    # shows the caller a black tile — worse than no tile. So we skip the publish
+    # until a real renderer (2D avatar / photoreal tier) is wired; the avatar object
+    # and its barge-in bookkeeping stay in place for that renderer to plug into.
+    if avatar is not None and getattr(avatar, "renders_frames", False):
         try:
             source = rtc.VideoSource(640, 480)
             track = rtc.LocalVideoTrack.create_video_track("avatar", source)

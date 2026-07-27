@@ -304,7 +304,7 @@ export const authApi = {
   },
 
   /** SSO — the backend owns the redirect. */
-  ssoUrl: (provider: 'google' | 'microsoft'): string => `${API_URL}/v1/auth/sso/${provider}`,
+  ssoUrl: (provider: 'google' | 'microsoft'): string => `${API_URL}/auth/sso/${provider}`,
 };
 
 // ===========================================================================

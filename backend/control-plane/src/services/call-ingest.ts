@@ -16,6 +16,7 @@ import { require_, type WorkspaceScope } from '../domain/tenant.js';
 import type { Call, CallTrace, TraceEvent, Turn } from '../domain/call-schemas.js';
 import type { CallRepository, TraceRepository } from '../repositories/call-repository.js';
 import type { AgentService } from './agent-service.js';
+import { estimateCallCostUsd } from './cost.js';
 
 /** A raw event as the worker emits it — loose on purpose; we read known fields. */
 type WorkerEvent = { type: string; tMs?: number; [key: string]: unknown };
@@ -119,6 +120,16 @@ export class CallIngestService {
       .filter((n) => Number.isFinite(n) && n > 0);
     const failed = ended ? String(ended.reason ?? '').includes('error') : false;
 
+    // Real per-call cost: telephony minutes + LLM tokens (summed from llm.done events).
+    const llmDone = raw.filter((e) => e.type === 'llm.done');
+    const sum = (k: string) => llmDone.reduce((s, e) => s + (Number(e[k]) || 0), 0);
+    const costUsd = estimateCallCostUsd({
+      durationSec: Math.round(lastT / 1000),
+      promptTokens: sum('promptTokens'),
+      cachedTokens: sum('cachedTokens'),
+      completionTokens: sum('completionTokens'),
+    });
+
     return {
       id: callId,
       orgId: scope.orgId,
@@ -137,7 +148,7 @@ export class CallIngestService {
       turnCount: raw.filter((e) => e.type === 'endpoint.commit').length,
       medianLatencyMs: median(ttfts),
       p95LatencyMs: percentile(ttfts, 0.95),
-      costUsd: 0,
+      costUsd,
       bargeInCount: raw.filter((e) => e.type === 'bargein.detected').length,
       agentVersion: Number(started?.agentVersion ?? 1),
     };
