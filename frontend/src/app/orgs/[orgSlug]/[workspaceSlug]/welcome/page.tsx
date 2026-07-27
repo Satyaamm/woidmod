@@ -61,7 +61,7 @@ export default function WelcomePage() {
     setState('connecting');
     setError(null);
     try {
-      // Mic permission first — the LiveKit room join lands here once the
+      // Mic permission first — the realtime room join lands here once the
       // orchestrator is up (docs/07 §Test console).
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((t) => t.stop());

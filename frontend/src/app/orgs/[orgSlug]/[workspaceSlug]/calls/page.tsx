@@ -10,6 +10,7 @@ import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { LatencyBadge } from '@/components/common/LatencyBadge';
 import { PageHeader } from '@/components/common/PageHeader';
 import { CallStatusTag, ModeTag, OutcomeTag } from '@/components/common/StatusTag';
+import { TableSkeleton } from '@/components/common/Skeletons';
 import { useAsync } from '@/hooks/useAsync';
 import { agentApi, callApi, type CallFilters } from '@/lib/api';
 import type { Call } from '@/lib/contract';
@@ -198,7 +199,11 @@ function CallsInner() {
           />
         </Flex>
 
-        <AsyncBoundary state={state} isEmpty={(page) => page.items.length === 0}>
+        <AsyncBoundary
+          state={state}
+          isEmpty={(page) => page.items.length === 0}
+          skeleton={<TableSkeleton columns={12} rows={8} />}
+        >
           {(page) => (
             <Table<Call>
               rowKey="id"

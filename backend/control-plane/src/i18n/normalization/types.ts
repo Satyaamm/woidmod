@@ -73,6 +73,14 @@ export interface NormalizationContext {
   /** Belgian/Swiss septante–huitante–nonante. Ignored outside French. */
   readonly frenchNumbers: FrenchNumberSystem;
   /**
+   * Uppercased tenant lexicon terms. Populated by the pipeline, not by callers.
+   *
+   * Verbalization runs BEFORE the lexicon (docs/03 §D stage order), so an all-caps brand
+   * like `ACME` would otherwise be spelled out as "A C M E" by the acronym rule and the
+   * lexicon would never get to see it. Rules consult this set and leave those tokens alone.
+   */
+  readonly lexiconTerms: ReadonlySet<string>;
+  /**
    * en-GB says "one thousand two hundred AND thirty-four"; en-US does not.
    * Derived from region, overridable.
    */
@@ -177,6 +185,8 @@ export interface LexiconEntry {
 
 const LANGUAGE_SET = new Set<string>(SUPPORTED_LANGUAGES);
 
+const EMPTY_TERMS: ReadonlySet<string> = new Set<string>();
+
 /** MDY is a US/Philippine convention. Everything else in our markets is DMY. */
 const MDY_REGIONS = new Set(['US', 'PH']);
 
@@ -249,6 +259,7 @@ export function resolveContext(input: NormalizationContextInput = {}): Normaliza
     digitGroupSize: input.digitGroupSize ?? 3,
     acronyms: input.acronyms ?? {},
     frenchNumbers,
+    lexiconTerms: input.lexiconTerms ?? EMPTY_TERMS,
     britishAnd: input.britishAnd ?? (language === 'en' && region !== 'US' && region !== 'CA'),
   };
 }

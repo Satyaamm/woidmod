@@ -3,33 +3,96 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { CheckCircleFilled, LockOutlined, MailOutlined } from '@ant-design/icons';
-import { Alert, Button, Flex, Form, Input, Progress, Typography } from 'antd';
+import { ArrowLeftOutlined, ArrowRightOutlined } from '@ant-design/icons';
+import { Alert, Button, Flex, Form, Steps, Typography } from 'antd';
 import { authApi } from '@/lib/api';
+import type { PhoneNumberValue, PostalAddress, SignUpInput } from '@/lib/contract';
 import { AuthLayout } from '@/features/auth/components/AuthLayout';
 import { SsoButtons } from '@/features/auth/components/SsoButtons';
+import { CompanyStep, ContactStep, IdentityStep } from '@/features/auth/signupSteps';
 
-interface SignupForm {
+interface SignupFormValues {
+  firstName: string;
+  familyName: string;
   email: string;
+  jobTitle?: string;
   password: string;
+  country: string;
+  phone: PhoneNumberValue;
+  timezone: string;
+  locale: string;
+  organization: {
+    name: string;
+    legalName?: string;
+    website?: string;
+    industry?: string;
+    size?: SignUpInput['organization']['size'];
+    address: PostalAddress;
+    taxId?: string;
+    billingEmail?: string;
+  };
+  acceptedTerms: boolean;
+  marketingOptIn?: boolean;
 }
 
-/** Deliberately two fields. Name, org, phone and billing are collected later,
- *  at the moment they're needed (docs/11 §B). */
+const STEPS = [
+  { title: 'Your details', fields: ['firstName', 'familyName', 'email', 'password'] },
+  { title: 'Contact', fields: ['country', 'phone', 'timezone', 'locale'] },
+  { title: 'Company', fields: [['organization', 'name'], 'acceptedTerms'] },
+] as const;
+
+/** Browser-detected defaults — never ask for what you can infer (docs/11 §4). */
+function detectDefaults() {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const locale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+  const country = locale.split('-')[1]?.toUpperCase() ?? (timezone.startsWith('Asia/Kolkata') ? 'IN' : 'US');
+  return { timezone, locale, country };
+}
+
 export default function SignupPage() {
   const router = useRouter();
+  const [form] = Form.useForm<SignupFormValues>();
+  const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState('');
+  const defaults = typeof window === 'undefined' ? { timezone: 'UTC', locale: 'en-US', country: 'US' } : detectDefaults();
+  const [country, setCountry] = useState(defaults.country);
 
-  const strength = scorePassword(password);
+  const next = async () => {
+    try {
+      await form.validateFields(STEPS[step]!.fields as never);
+      setStep((s) => s + 1);
+      setError(null);
+    } catch {
+      /* antd shows the field errors inline */
+    }
+  };
 
-  const onFinish = async (values: SignupForm) => {
+  const submit = async () => {
     setSubmitting(true);
     setError(null);
     try {
-      await authApi.signUp(values);
-      router.push(`/verify-email?email=${encodeURIComponent(values.email)}`);
+      const values = await form.validateFields();
+      const payload: SignUpInput = {
+        email: values.email,
+        password: values.password,
+        firstName: values.firstName,
+        familyName: values.familyName,
+        jobTitle: values.jobTitle,
+        phone: values.phone,
+        country: values.country,
+        timezone: values.timezone,
+        locale: values.locale,
+        organization: {
+          ...values.organization,
+          billingEmail: values.organization.billingEmail || values.email,
+        },
+        marketingOptIn: Boolean(values.marketingOptIn),
+        acceptedTermsAt: new Date().toISOString(),
+      };
+      await authApi.signUp(payload);
+      router.push(`/verify-email?email=${encodeURIComponent(payload.email)}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -39,86 +102,70 @@ export default function SignupPage() {
 
   return (
     <AuthLayout
-      title="Start building"
-      subtitle="Two fields, then you're talking to an agent. No credit card, no setup wizard."
+      title="Create your account"
+      subtitle="Three short steps. Everything here goes on your invoices and compliance records, so it's worth getting right once."
     >
+      <Steps
+        size="small"
+        current={step}
+        items={STEPS.map((s) => ({ title: s.title }))}
+        style={{ marginBottom: 24 }}
+      />
+
       {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
 
-      <SsoButtons label="or sign up with email" />
+      {step === 0 && <SsoButtons label="or sign up with email" />}
 
-      <Form<SignupForm> layout="vertical" onFinish={onFinish} requiredMark={false}>
-        <Form.Item
-          name="email"
-          label="Work email"
-          rules={[{ required: true, message: 'Enter your email' }, { type: 'email', message: 'That email looks wrong' }]}
-          extra="We use your domain to find your team if they're already here."
-        >
-          <Input size="large" prefix={<MailOutlined />} placeholder="you@company.com" autoComplete="email" autoFocus />
-        </Form.Item>
+      <Form<SignupFormValues>
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        scrollToFirstError
+        initialValues={{
+          timezone: defaults.timezone,
+          locale: defaults.locale,
+          country: defaults.country,
+          phone: { countryCode: defaults.country, dialCode: '', number: '' },
+          organization: { address: { country: defaults.country } },
+          marketingOptIn: false,
+        }}
+        onValuesChange={(changed) => {
+          if (changed.password !== undefined) setPassword(changed.password);
+          if (changed.country) setCountry(changed.country);
+        }}
+      >
+        {/* All steps stay mounted so nothing is lost when stepping back. */}
+        <div hidden={step !== 0}>
+          <IdentityStep password={password} />
+        </div>
+        <div hidden={step !== 1}>
+          <ContactStep country={country} />
+        </div>
+        <div hidden={step !== 2}>
+          <CompanyStep country={country} />
+        </div>
 
-        <Form.Item
-          name="password"
-          label="Password"
-          rules={[
-            { required: true, message: 'Choose a password' },
-            { min: 10, message: 'At least 10 characters' },
-          ]}
-        >
-          <Input.Password
-            size="large"
-            prefix={<LockOutlined />}
-            placeholder="At least 10 characters"
-            autoComplete="new-password"
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </Form.Item>
-
-        {password && (
-          <Flex align="center" gap={10} style={{ marginTop: -10, marginBottom: 16 }}>
-            <Progress
-              percent={strength.percent}
-              size="small"
-              showInfo={false}
-              status={strength.percent < 50 ? 'exception' : 'success'}
-              style={{ flex: 1, margin: 0 }}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {strength.label}
-            </Typography.Text>
-          </Flex>
-        )}
-
-        <Button type="primary" size="large" htmlType="submit" block loading={submitting}>
-          Create account
-        </Button>
+        <Flex gap={10} style={{ marginTop: 8 }}>
+          {step > 0 && (
+            <Button size="large" icon={<ArrowLeftOutlined />} onClick={() => setStep((s) => s - 1)}>
+              Back
+            </Button>
+          )}
+          {step < STEPS.length - 1 ? (
+            <Button type="primary" size="large" block onClick={next}>
+              Continue <ArrowRightOutlined />
+            </Button>
+          ) : (
+            <Button type="primary" size="large" block loading={submitting} onClick={submit}>
+              Create account
+            </Button>
+          )}
+        </Flex>
       </Form>
-
-      <Flex vertical gap={6} style={{ marginTop: 20 }}>
-        {['Free trial credits — no card required', 'Test mode by default, so nothing dials a real person'].map((line) => (
-          <Flex key={line} align="center" gap={8}>
-            <CheckCircleFilled style={{ fontSize: 12, opacity: 0.8 }} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {line}
-            </Typography.Text>
-          </Flex>
-        ))}
-      </Flex>
 
       <Typography.Paragraph type="secondary" style={{ marginTop: 20, textAlign: 'center' }}>
         Already have an account? <Link href="/login">Log in</Link>
       </Typography.Paragraph>
     </AuthLayout>
   );
-}
-
-function scorePassword(pw: string): { percent: number; label: string } {
-  if (!pw) return { percent: 0, label: '' };
-  let score = 0;
-  if (pw.length >= 10) score += 35;
-  if (pw.length >= 16) score += 20;
-  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score += 15;
-  if (/\d/.test(pw)) score += 15;
-  if (/[^\w\s]/.test(pw)) score += 15;
-  const percent = Math.min(100, score);
-  return { percent, label: percent < 50 ? 'Weak' : percent < 80 ? 'Good' : 'Strong' };
 }

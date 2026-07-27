@@ -31,6 +31,8 @@ import { v1Router, V1_VERSION } from './v1/index.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerCallRoutes } from './routes/calls.js';
 import { registerTelephonyRoutes } from './routes/telephony.js';
+import { config } from '../config.js';
+import { SipService } from '../services/sip.js';
 
 export interface ServerDeps {
   container: Container;
@@ -53,11 +55,22 @@ export function createServer({ container, resolvePrincipal }: ServerDeps) {
     c.json({ ok: true, service: 'control-plane', apiVersion: V1_VERSION }),
   );
 
-  // Unauthenticated by design — this is where sessions are created.
-  registerAuthRoutes(app as never, container as never);
+  // Public inbound TwiML — Twilio fetches this when a bought number rings. It forwards
+  // the PSTN call to LiveKit SIP, where the dispatch rule drops it into a room with the
+  // agent. Unauthenticated by necessity (the carrier calls it); it returns no secrets.
+  const twiml = () => SipService.inboundTwiml(config.LIVEKIT_SIP_URI);
+  app.get('/telephony/twiml/inbound', (c) => c.body(twiml(), 200, { 'content-type': 'text/xml' }));
+  app.post('/telephony/twiml/inbound', (c) => c.body(twiml(), 200, { 'content-type': 'text/xml' }));
 
-  // Everything below is authenticated and tenant-scoped.
+  // Tenant context guards EVERY `/v1/*` route. Registered BEFORE any route module
+  // because Hono only runs middleware for routes declared after it — and `auth.ts`
+  // declares both `/auth/*` (unauthenticated) AND `/v1/*` (members, invitations,
+  // org, me) in one module. Path-scoped to `/v1/*`, so `/auth/*` stays public.
   app.use('/v1/*', tenantContext(resolvePrincipal));
+
+  // `/auth/*` is unauthenticated by design — this is where sessions are created.
+  // Its `/v1/*` routes now correctly inherit the middleware above.
+  registerAuthRoutes(app as never, container as never);
 
   app.route('/v1', v1Router(container));
 

@@ -140,7 +140,18 @@ export const anthropicConfigSchema = z.object({
   maxTokens: z.number().int().min(64).max(4_096).default(512),
   /** Explicit prefix-cache breakpoint — the docs/01 §5 lever. */
   promptCaching: z.boolean().default(true),
-  inferenceGeo: z.enum(['us', 'eu']).optional(),
+  /**
+   * VERIFIED 2026-07-23 — the API accepts exactly `"global"` and `"us"`.
+   * There is NO `"eu"` inference geo, and workspace geo is US-only too:
+   * https://platform.claude.com/docs/en/manage-claude/data-residency
+   * ("Inference geo: Only `us` and `global` are available.")
+   *
+   * The previous `z.enum(['us','eu'])` let a workspace configure `eu` and the
+   * `meta()` below then published `allowedBlocs: ['EU']` — an EU residency
+   * claim the first-party Claude API cannot honour. EU workspaces must use the
+   * Vertex adapter (EU location) or Bedrock (EU region) instead.
+   */
+  inferenceGeo: z.enum(['us', 'global']).optional(),
 });
 
 export type AnthropicConfig = z.infer<typeof anthropicConfigSchema>;
@@ -161,12 +172,17 @@ export function anthropicLlmFactory(): ProviderFactory<LlmProvider, AnthropicCon
         ...(config.inferenceGeo ? { inferenceGeo: config.inferenceGeo } : {}),
       });
     },
-    meta: (config) => ({
+    meta: () => ({
       costPerMinuteUsd: 0.02,
       // Warm prefix caching is what makes this viable on a phone call: cold
-      // prefill on a ~4k-token agent prompt is ~400ms, warm is ~150ms.
+      // prefill on the agent prompt is ~400ms, warm is ~150ms. NB the prompt
+      // must clear MIN_CACHEABLE_PREFIX_TOKENS (4096 on claude-haiku-4-5) or
+      // it never caches — see anthropic-llm.ts.
       typicalTtfbMs: 400,
-      allowedBlocs: config.inferenceGeo === 'eu' ? ['EU'] : ['US'],
+      // Always US. The first-party Claude API offers no EU inference geo and
+      // no EU workspace geo (verified 2026-07-23, data-residency docs), so
+      // there is no configuration of this provider that earns an EU claim.
+      allowedBlocs: ['US'],
       selfHosted: false,
     }),
   };

@@ -25,48 +25,28 @@ export interface TenantScope {
   readonly userId: string;
   readonly mode: Mode;
   readonly permissions: ReadonlySet<Permission>;
+  /** Present when the grant was narrowed to specific resources. Undefined = all. */
+  readonly resourceScope?: ResourceScope;
   readonly [AUTHORIZED]: true;
 }
 
-export type Permission =
-  | 'org:read' | 'org:write' | 'org:billing' | 'org:members'
-  | 'workspace:read' | 'workspace:write' | 'workspace:create'
-  | 'agent:read' | 'agent:write' | 'agent:publish'
-  | 'call:read' | 'call:read_pii' | 'call:place_test'
-  | 'number:manage' | 'campaign:manage' | 'apikey:manage';
-
-// ---------------------------------------------------------------------------
-// Role -> permission mapping. Single source of truth; docs/10 §Roles.
-// ---------------------------------------------------------------------------
-
-const ORG_PERMISSIONS: Record<OrgRole, Permission[]> = {
-  owner: [
-    'org:read', 'org:write', 'org:billing', 'org:members',
-    'workspace:read', 'workspace:create',
-  ],
-  admin: ['org:read', 'org:write', 'org:members', 'workspace:read', 'workspace:create'],
-  billing_admin: ['org:read', 'org:billing'],
-  member: ['org:read'],
-};
-
-const WORKSPACE_PERMISSIONS: Record<WorkspaceRole, Permission[]> = {
-  workspace_admin: [
-    'workspace:read', 'workspace:write',
-    'agent:read', 'agent:write', 'agent:publish',
-    'call:read', 'call:read_pii', 'call:place_test',
-    'number:manage', 'campaign:manage', 'apikey:manage',
-  ],
-  developer: [
-    'workspace:read',
-    'agent:read', 'agent:write', 'agent:publish',
-    'call:read', 'call:read_pii', 'call:place_test',
-    'campaign:manage',
-  ],
-  // analyst/viewer deliberately lack call:read_pii — they see transcripts with PII
-  // masked. This is what makes it safe to give QA and BPO staff trace access.
-  analyst: ['workspace:read', 'agent:read', 'call:read'],
-  viewer: ['workspace:read', 'agent:read', 'call:read'],
-};
+/**
+ * Permissions, roles and the resource-scoping model live in `permissions.ts`, which
+ * declares them as data so the dashboard can render a real role editor and tenants
+ * can define custom roles. This module keeps the *enforcement*: minting a scope and
+ * checking it.
+ */
+export type { Permission } from './permissions.js';
+import {
+  expandPermissions,
+  resolveWorkspacePermissions,
+  scopeAllowsAgent,
+  scopeAllowsNumber,
+  ORG_ROLE_PERMISSIONS,
+  type CustomRole,
+  type Permission,
+  type ResourceScope,
+} from './permissions.js';
 
 /**
  * Org owners and admins get implicit admin on every workspace in the org.
@@ -74,12 +54,27 @@ const WORKSPACE_PERMISSIONS: Record<WorkspaceRole, Permission[]> = {
  */
 const IMPLICIT_WORKSPACE_ADMIN: OrgRole[] = ['owner', 'admin'];
 
+/** A grant of a role in one workspace, optionally narrowed to specific resources. */
+export interface WorkspaceGrant {
+  /** Built-in role name, or a custom role object defined by the org. */
+  role: WorkspaceRole | CustomRole;
+  /** Narrows the grant — "analyst, but only for these two agents". */
+  resourceScope?: ResourceScope;
+}
+
 export interface Principal {
   userId: string;
   orgId: string;
   orgRole: OrgRole;
-  /** Explicit per-workspace grants. */
-  workspaceRoles: ReadonlyMap<string, WorkspaceRole>;
+  /**
+   * Explicit per-workspace grants. Accepts either a bare role (the common case) or
+   * a full grant with resource scoping, so existing callers don't have to change.
+   */
+  workspaceRoles: ReadonlyMap<string, WorkspaceRole | WorkspaceGrant>;
+}
+
+function toGrant(value: WorkspaceRole | WorkspaceGrant): WorkspaceGrant {
+  return typeof value === 'string' ? { role: value } : value;
 }
 
 export class AuthorizationError extends Error {
@@ -101,23 +96,29 @@ export function authorize(
   principal: Principal,
   opts: { workspaceId?: string | null; mode?: Mode } = {},
 ): TenantScope {
-  const permissions = new Set<Permission>(ORG_PERMISSIONS[principal.orgRole]);
+  // Org permissions are closed over their dependencies so a role can never carry an
+  // incoherent set (e.g. call:read_pii without call:read).
+  const permissions = expandPermissions(ORG_ROLE_PERMISSIONS[principal.orgRole]);
   const workspaceId = opts.workspaceId ?? null;
+  let resourceScope: ResourceScope | undefined;
 
   if (workspaceId) {
     const explicit = principal.workspaceRoles.get(workspaceId);
-    const effective: WorkspaceRole | undefined =
-      explicit ??
-      (IMPLICIT_WORKSPACE_ADMIN.includes(principal.orgRole) ? 'workspace_admin' : undefined);
+    const grant: WorkspaceGrant | undefined = explicit
+      ? toGrant(explicit)
+      : IMPLICIT_WORKSPACE_ADMIN.includes(principal.orgRole)
+        ? { role: 'workspace_admin' }
+        : undefined;
 
-    if (!effective) {
+    if (!grant) {
       throw new AuthorizationError(
         `no access to workspace ${workspaceId}`,
         'workspace:read',
         404, // 404, not 403 — don't confirm the workspace exists to a stranger
       );
     }
-    for (const p of WORKSPACE_PERMISSIONS[effective]) permissions.add(p);
+    for (const p of resolveWorkspacePermissions(grant.role)) permissions.add(p);
+    resourceScope = grant.resourceScope;
   }
 
   return {
@@ -126,7 +127,36 @@ export function authorize(
     userId: principal.userId,
     mode: opts.mode ?? 'test',
     permissions,
+    resourceScope,
   } as unknown as TenantScope;
+}
+
+/**
+ * Resource-level check, on top of the permission check.
+ *
+ * `require_(scope, 'agent:write')` answers "may this person edit agents at all";
+ * this answers "may they edit *this* agent". Both are needed for a grant like
+ * "developer, but only on the Acme brand" — and forgetting the second is how
+ * resource scoping silently becomes decorative.
+ */
+export function requireAgent(scope: TenantScope, agentId: string): void {
+  if (!scopeAllowsAgent(scope.resourceScope, agentId)) {
+    throw new AuthorizationError(
+      `agent ${agentId} is outside your granted scope`,
+      'agent:read',
+      404, // same reasoning as workspace: don't confirm existence
+    );
+  }
+}
+
+export function requireNumber(scope: TenantScope, numberId: string): void {
+  if (!scopeAllowsNumber(scope.resourceScope, numberId)) {
+    throw new AuthorizationError(
+      `number ${numberId} is outside your granted scope`,
+      'number:read',
+      404,
+    );
+  }
 }
 
 /** Throwing check — use at the top of every mutating handler. */

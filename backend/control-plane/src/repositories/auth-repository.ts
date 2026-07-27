@@ -34,6 +34,10 @@ export interface CredentialRecord {
   hash: string;
   params: { N: number; r: number; p: number; keylen: number };
   updatedAt: string;
+  /** TOTP MFA secret (base32). Set on enrollment; present but unconfirmed until `mfaEnabled`. */
+  totpSecret?: string;
+  /** True once the user has confirmed a code — only then is a login code required. */
+  mfaEnabled?: boolean;
 }
 
 export interface VerificationCodeRecord {

@@ -234,9 +234,11 @@ export function rowToAgent(row: AgentRow): Agent {
     description: row.description,
     language: row.language,
     prompt: row.prompt,
+    modality: row.modality,
     voice: row.voice,
     pipeline: row.pipeline,
     tools: row.tools,
+    flow: nn(row.flow),
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     stats: row.stats,
@@ -254,9 +256,11 @@ export function agentToRow(agent: Agent, orgId: string, workspaceId: string): Ne
     description: agent.description,
     language: agent.language,
     prompt: agent.prompt,
+    modality: agent.modality,
     voice: agent.voice,
     pipeline: agent.pipeline,
     tools: agent.tools,
+    flow: nu(agent.flow),
     stats: agent.stats,
     createdAt: toDate(agent.createdAt),
     updatedAt: toDate(agent.updatedAt),
@@ -271,9 +275,11 @@ export function agentPatchToRow(patch: Partial<Agent>): Partial<NewAgentRow> {
   if (patch.description !== undefined) row.description = patch.description;
   if (patch.language !== undefined) row.language = patch.language;
   if (patch.prompt !== undefined) row.prompt = patch.prompt;
+  if (patch.modality !== undefined) row.modality = patch.modality;
   if (patch.voice !== undefined) row.voice = patch.voice;
   if (patch.pipeline !== undefined) row.pipeline = patch.pipeline;
   if (patch.tools !== undefined) row.tools = patch.tools;
+  if ('flow' in patch) row.flow = nu(patch.flow);
   if (patch.stats !== undefined) row.stats = patch.stats;
   return row;
 }

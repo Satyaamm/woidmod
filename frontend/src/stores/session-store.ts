@@ -17,7 +17,7 @@ interface SessionState {
   status: 'idle' | 'loading' | 'authenticated' | 'anonymous';
   error: string | null;
   load: () => Promise<void>;
-  logIn: (input: Credentials) => Promise<void>;
+  logIn: (input: Credentials, remember?: boolean) => Promise<void>;
   verifyEmail: (input: { email: string; code: string }) => Promise<void>;
   logOut: () => Promise<void>;
   setSession: (session: Session) => void;
@@ -40,10 +40,15 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     }
   },
 
-  logIn: async (input) => {
+  logIn: async (input, remember = true) => {
     set({ status: 'loading', error: null });
     try {
-      const { session } = await authApi.logIn(input);
+      // Login returns a bearer token, not the dashboard session. The full session
+      // (orgs, workspaces, permissions, onboarding flags) comes from /v1/session,
+      // which is the only place that resolves effective permissions.
+      // `remember` chooses localStorage (persist) vs sessionStorage (this session only).
+      await authApi.logIn(input, remember);
+      const session = await sessionApi.get();
       set({ session, status: 'authenticated' });
     } catch (err) {
       set({ status: 'anonymous', error: (err as Error).message });
@@ -52,7 +57,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
   },
 
   verifyEmail: async (input) => {
-    const { session } = await authApi.verifyEmail(input);
+    // Verification confirms the address; it does not mint a session. The user is
+    // already authenticated from signup, so just refresh to pick up the new flag.
+    await authApi.verifyEmail(input);
+    const session = await sessionApi.get();
     set({ session, status: 'authenticated' });
   },
 

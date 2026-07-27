@@ -3,7 +3,7 @@
 import { Segmented, Tooltip } from 'antd';
 import { createStyles } from 'antd-style';
 import { App } from 'antd';
-import { sessionApi } from '@/lib/api';
+import { setApiScope } from '@/lib/api';
 import type { Mode } from '@/lib/contract';
 import { palette } from '@/theme/tokens';
 import { useUiStore } from '@/stores/ui-store';
@@ -38,7 +38,7 @@ const useStyles = createStyles(({ token, css }, { mode }: { mode: Mode }) => {
 });
 
 /**
- * Stripe-style test/live toggle, persisted per workspace. Test mode = browser
+ * Test/live mode toggle, persisted per workspace. Test mode = browser
  * and test numbers only, no PSTN spend — a safety control, not just DX.
  */
 export function ModeToggle({ workspaceId }: { workspaceId: string | undefined }) {
@@ -49,16 +49,14 @@ export function ModeToggle({ workspaceId }: { workspaceId: string | undefined })
 
   if (!workspaceId) return null;
 
-  const onChange = async (next: string | number) => {
+  const onChange = (next: string | number) => {
     const value = next as Mode;
+    // Mode is client-controlled: it's persisted per workspace and sent as the
+    // `x-mode` header on every request (the backend derives scope.mode from it, and
+    // gates call:place_live vs call:place_test). Update both so the switch takes
+    // effect immediately — there is no server-side mode to PATCH.
     setMode(workspaceId, value);
-    try {
-      await sessionApi.setMode(workspaceId, value);
-    } catch {
-      message.error('Could not switch mode — reverting.');
-      setMode(workspaceId, mode);
-      return;
-    }
+    setApiScope(workspaceId, value);
     if (value === 'live') message.warning('Live mode — calls now use real telephony and real spend.');
   };
 

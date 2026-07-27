@@ -5,13 +5,25 @@
  * only thing that must survive that swap is this interface — so nothing above
  * this file knows what SSE looks like.
  *
- * PREFIX CACHING (docs/01 §5): OpenAI's cache is *automatic* for prompts over
- * ~1024 tokens — there is no `cache_control` to set. What we can control is
+ * TODO (not done here, deliberately): OpenAI now recommends the Responses API
+ * for new integrations — "While Chat Completions remains supported, Responses
+ * is recommended for all new projects" and "We recommend migrating all flows to
+ * the Responses API over time"
+ * (https://developers.openai.com/api/docs/guides/migrate-to-responses,
+ * checked 2026-07-23). Chat Completions is NOT deprecated and remains
+ * supported, so this file stays as-is; a rewrite is a separate, testable change
+ * and would also change the cache-usage field path (Responses reports cache
+ * hits under `usage.input_tokens_details`, not `usage.prompt_tokens_details`).
+ *
+ * PREFIX CACHING (docs/01 §5): OpenAI's cache is *automatic* — there is no
+ * `cache_control` to set. VERIFIED 2026-07-23
+ * (https://developers.openai.com/api/docs/guides/prompt-caching): "Caching is
+ * available for prompts containing 1024 tokens or more." What we can control is
  * making the prefix byte-identical across turns of the same agent, so we sort
  * nothing, reorder nothing, and keep system + tools first. The hit count comes
- * back as `usage.prompt_tokens_details.cached_tokens` and is reported as
- * `cachedTokens` on the `done` delta, because that number is the latency and
- * cost lever the Cost Governor reasons about.
+ * back as `usage.prompt_tokens_details.cached_tokens` (VERIFIED, same page) and
+ * is reported as `cachedTokens` on the `done` delta, because that number is the
+ * latency and cost lever the Cost Governor reasons about.
  *
  * RESIDENCY: the default api.openai.com is US-processed. EU data residency is
  * an enterprise feature on a separate host, so the factory switches both the
@@ -25,7 +37,21 @@ export interface OpenAiLlmOptions {
   baseUrl: string;
   models: string[];
   organization?: string;
-  /** Sent as `prompt_cache_key`; scopes the automatic prefix cache per agent. */
+  /**
+   * Sent as `prompt_cache_key`.
+   * VERIFIED 2026-07-23
+   * (https://developers.openai.com/api/docs/guides/prompt-caching): the
+   * parameter exists, and its semantics are routing, not namespacing — "If you
+   * provide the `prompt_cache_key` parameter, it is combined with the prefix
+   * hash, allowing you to influence routing and improve cache hit rates." On
+   * GPT-5.6 and later families the docs state you "must set `prompt_cache_key`
+   * to use the more reliable matching", so it is not merely an optimisation.
+   *
+   * CONSTRAINT the caller must respect: "Keep the total traffic across all
+   * prefixes for each key to approximately 15 requests per minute." An agent id
+   * is the right granularity for a voice deployment; a single global constant
+   * would exceed that and degrade hit rates rather than improve them.
+   */
   usePromptCacheKey: boolean;
 }
 
@@ -60,12 +86,27 @@ export class OpenAiLlmProvider implements LlmProvider {
       model: streamOpts.model,
       messages: streamOpts.messages.map(toOpenAiMessage),
       stream: true,
-      // Without this the final chunk carries no usage, and we lose the cache
-      // hit count — i.e. we lose the metric docs/01 §5 is about.
+      // VERIFIED 2026-07-23: `stream_options.include_usage` is a documented
+      // Chat Completions parameter. Without it the stream carries no usage at
+      // all, and we lose the cache hit count — i.e. we lose the metric
+      // docs/01 §5 is about.
       stream_options: { include_usage: true },
     };
     if (streamOpts.temperature !== undefined) body['temperature'] = streamOpts.temperature;
-    if (streamOpts.maxTokens !== undefined) body['max_tokens'] = streamOpts.maxTokens;
+    if (streamOpts.maxTokens !== undefined) {
+      // CORRECTED 2026-07-23: this used to send `max_tokens`. Per the Chat
+      // Completions reference
+      // (https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+      // `max_tokens` "is now deprecated in favor of `max_completion_tokens`,
+      // and is not compatible with o-series models" — on a reasoning model the
+      // old field is rejected outright, so the deprecation is load-bearing, not
+      // cosmetic. `max_completion_tokens` bounds visible output AND reasoning
+      // tokens together.
+      //
+      // Note this is intentionally NOT mirrored into groq-llm.ts: Groq's
+      // OpenAI-compatible endpoint still documents `max_tokens`.
+      body['max_completion_tokens'] = streamOpts.maxTokens;
+    }
     if (streamOpts.tools?.length) {
       body['tools'] = streamOpts.tools.map((t) => ({
         type: 'function',
@@ -109,6 +150,9 @@ export class OpenAiLlmProvider implements LlmProvider {
       const chunk = parseJson(event);
       if (!chunk) continue;
 
+      // With include_usage the usage object arrives on a final chunk whose
+      // `choices` array is empty — hence reading usage BEFORE the choices
+      // guard below, which would otherwise `continue` past it.
       const usage = chunk['usage'];
       if (usage && typeof usage === 'object') {
         const u = usage as Record<string, unknown>;
@@ -157,8 +201,15 @@ export class OpenAiLlmProvider implements LlmProvider {
         }
       }
 
-      // Arguments arrive as a JSON fragment stream; a partial call is not
-      // executable, so we emit each call once its arguments are complete.
+      // VERIFIED 2026-07-23: the streaming tool-call delta shape is
+      // `choices[].delta.tool_calls[]` with `.index`, `.id`,
+      // `.function.name` and `.function.arguments`, where `arguments` is a
+      // partial JSON string accumulated across chunks and `index` is the
+      // correlation key (`id` and `name` arrive only on the first fragment).
+      // Accumulating by index, as above, is the correct pattern.
+      //
+      // A partial call is not executable, so we emit each call only once its
+      // arguments are complete — signalled by `finish_reason`.
       if (typeof finish === 'string' && finish.length > 0) {
         for (const call of toolCalls.values()) {
           if (call.emitted || !call.name) continue;

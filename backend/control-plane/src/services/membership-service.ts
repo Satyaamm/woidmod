@@ -231,6 +231,25 @@ export class MembershipService {
     });
   }
 
+  /**
+   * Replace the FULL set of workspace grants in one write — what the "edit access"
+   * drawer submits. Every referenced workspace is validated, so a stale id can't
+   * silently persist a grant to a workspace that no longer exists.
+   */
+  async setWorkspaceRoles(
+    scope: TenantScope,
+    membershipId: string,
+    grants: Array<{ workspaceId: string; role: WorkspaceRole }>,
+  ): Promise<OrgMembershipRecord> {
+    require_(scope, 'org:members');
+    await this.requireMembership(scope, membershipId);
+    for (const grant of grants) {
+      const workspace = await this.deps.workspaces.get(scope, grant.workspaceId);
+      if (!workspace) throw new NotFoundError('workspace', grant.workspaceId);
+    }
+    return this.deps.memberships.update(scope, membershipId, { workspaceRoles: grants });
+  }
+
   async touchLastActive(orgId: string, userId: string): Promise<void> {
     const membership = await this.deps.memberships.findForUserInOrg(userId, orgId);
     if (!membership) return;

@@ -14,6 +14,11 @@ import {
   VersionsTab,
   VoiceTab,
 } from '@/features/agents/components/AgentTabs';
+import {
+  GuardrailsTab,
+  KnowledgeTab,
+} from '@/features/agents/components/KnowledgeGuardrailsTabs';
+import { FlowTab } from '@/features/flow-builder/FlowTab';
 import { useAsync } from '@/hooks/useAsync';
 import { agentApi, platformApi } from '@/lib/api';
 import { formatNumber, formatPercent, formatUsd } from '@/lib/format';
@@ -96,6 +101,9 @@ export default function AgentDetailPage() {
                 children: <PipelineTab agent={agent} capabilities={caps.data} editable={canWrite} />,
               },
               { key: 'tools', label: `Tools (${agent.tools.length})`, children: <ToolsTab agent={agent} editable={canWrite} /> },
+              { key: 'knowledge', label: 'Knowledge', children: <KnowledgeTab agent={agent} editable={canWrite} /> },
+              { key: 'guardrails', label: 'Guardrails', children: <GuardrailsTab agent={agent} editable={canWrite} /> },
+              { key: 'flow', label: 'Flow', children: <FlowTab agent={agent} editable={canWrite} /> },
               { key: 'versions', label: 'Versions', children: <VersionsTab agent={agent} /> },
             ]}
           />

@@ -11,6 +11,7 @@
  * service above this line is unaware of the difference.
  */
 
+import { config, platformSecret, type Env } from './config.js';
 import { FallbackRegistry, Registry } from './core/patterns/registry.js';
 import { FallbackExecutor } from './core/patterns/circuit-breaker.js';
 import { EventBus } from './core/patterns/event-bus.js';
@@ -26,26 +27,61 @@ import type { Logger } from './core/patterns/factory.js';
 
 import { MockLlmProvider, MockSttProvider, MockTtsProvider } from './providers/mock.js';
 import type { LlmProvider, SttProvider, TtsProvider } from './providers/types.js';
+import { PROVIDER_CATALOG } from './providers/catalog.js';
 
+import type { DbHandle } from './db/client.js';
 import type {
   AgentRepository,
   OrganizationRepository,
   UserRepository,
   WorkspaceRepository,
 } from './repositories/types.js';
+import type {
+  ApiKeyRepository,
+  CredentialRepository,
+  InvitationRepository,
+  MembershipRepository,
+  SessionRepository,
+  VerificationCodeRepository,
+} from './repositories/auth-repository.js';
 import {
   MemoryAgentRepository,
   MemoryOrganizationRepository,
   MemoryUserRepository,
   MemoryWorkspaceRepository,
 } from './repositories/memory.js';
+// Postgres repositories — used when a DbHandle is supplied (DATABASE_URL set).
+import { PostgresUserRepository } from './repositories/postgres/users.js';
+import { PostgresOrganizationRepository } from './repositories/postgres/organizations.js';
+import { PostgresWorkspaceRepository } from './repositories/postgres/workspaces.js';
+import { PostgresAgentRepository } from './repositories/postgres/agents.js';
+import { PostgresCredentialRepository } from './repositories/postgres/credentials.js';
+import { PostgresVerificationCodeRepository } from './repositories/postgres/verification-codes.js';
+import { PostgresSessionRepository } from './repositories/postgres/sessions.js';
+import { PostgresMembershipRepository } from './repositories/postgres/memberships.js';
+import { PostgresInvitationRepository } from './repositories/postgres/invitations.js';
+import { PostgresApiKeyRepository } from './repositories/postgres/api-keys.js';
+import { PostgresProviderCredentialRepository } from './repositories/postgres/provider-credentials.js';
+import { PostgresCustomRoleRepository } from './repositories/postgres/custom-roles.js';
 import { MemoryCallRepository, MemoryTraceRepository } from './repositories/memory-call.js';
+import { PostgresCallRepository, PostgresTraceRepository } from './repositories/postgres/calls.js';
+import type { CallRepository, TraceRepository } from './repositories/call-repository.js';
 import {
   MemoryCampaignRepository,
   MemoryDispatchAuditRepository,
   MemoryLeadRepository,
   MemoryPhoneNumberRepository,
 } from './repositories/memory-telephony.js';
+import type {
+  CampaignRepository,
+  DispatchAuditRepository,
+  LeadRepository,
+  PhoneNumberRepository,
+} from './repositories/telephony-repository.js';
+import { PostgresPhoneNumberRepository } from './repositories/postgres/phone-numbers.js';
+import { PostgresCampaignRepository } from './repositories/postgres/campaigns.js';
+import { PostgresLeadRepository } from './repositories/postgres/leads.js';
+import { PostgresDispatchAuditRepository } from './repositories/postgres/dispatch-audit.js';
 import {
   MemoryApiKeyRepository,
   MemoryCredentialRepository,
@@ -58,14 +94,50 @@ import {
 import { WorkspaceService } from './services/workspace-service.js';
 import { AgentService } from './services/agent-service.js';
 import { CallService } from './services/call-service.js';
+import { CallIngestService } from './services/call-ingest.js';
 import { TraceRecorder } from './services/trace-recorder.js';
-import { NumberService } from './services/number-service.js';
+import { NumberService, MockNumberProvider } from './services/number-service.js';
+import { TwilioNumberProvider } from './providers/telephony/twilio.js';
 import { CampaignService } from './services/campaign-service.js';
 import { AuthService, resolveAuthSecrets } from './services/auth-service.js';
 import { MembershipService } from './services/membership-service.js';
 import { InvitationService } from './services/invitation-service.js';
 import { ApiKeyService } from './services/apikey-service.js';
 import { buildComplianceChain } from './services/compliance.js';
+import {
+  ProviderCredentialService,
+  MemoryProviderCredentialRepository,
+  type ProviderCredentialRepository,
+} from './services/provider-credentials.js';
+import {
+  RoleService,
+  MemoryCustomRoleRepository,
+  type CustomRoleRepository,
+} from './services/role-service.js';
+import { MemoryLexiconRepository } from './services/lexicon.js';
+import { liveKitFromEnv, type LiveKitService } from './services/livekit.js';
+import { sipFromEnv, type SipService } from './services/sip.js';
+// Phase 4 feature services (in-memory; self-contained verticals).
+import { createKnowledgeService, type KnowledgeService } from './services/knowledge-service.js';
+import { createVectorStore, type VectorStoreConfig } from './rag/vector-adapters.js';
+import { createEmbedder } from './rag/embedder.js';
+
+/** Map the deployment env to a vector-store config (RAG). Absent → in-memory. */
+function vectorDbConfig(c: Env): VectorStoreConfig {
+  switch (c.VECTOR_DB_PROVIDER) {
+    case 'pgvector':
+      return { provider: 'pgvector', connectionString: c.VECTOR_DB_CONNECTION_STRING ?? c.DATABASE_URL ?? '' };
+    case 'pinecone':
+      return { provider: 'pinecone', apiKey: c.VECTOR_DB_API_KEY ?? '', indexHost: c.VECTOR_DB_INDEX_HOST ?? '' };
+    case 'chroma':
+      return { provider: 'chroma', url: c.VECTOR_DB_URL ?? '', apiKey: c.VECTOR_DB_API_KEY };
+    default:
+      return { provider: 'memory' };
+  }
+}
+import { createToolService, type ToolService } from './services/tool-service.js';
+import { createWebhookService, type WebhookService } from './services/webhook-service.js';
+import { createEvalService, type EvalService } from './services/eval-service.js';
 
 import { AuditLogger, MemoryAuditLogStore } from './compliance/audit-log.js';
 import {
@@ -73,6 +145,7 @@ import {
   LocalKms,
   MemoryTenantKeyStore,
 } from './compliance/encryption.js';
+import { PostgresTenantKeyStore } from './compliance/postgres-key-store.js';
 import { ProviderPostureRegistry } from './compliance/provider-eligibility.js';
 
 import type { PipelineEvents } from './orchestration/events.js';
@@ -85,7 +158,7 @@ function createLogger(bindings: Record<string, unknown> = {}): Logger {
   const fmt = (level: string, msg: string, meta?: Record<string, unknown>) =>
     JSON.stringify({ level, msg, ...bindings, ...meta, t: new Date().toISOString() });
   return {
-    debug: (m, meta) => process.env.LOG_LEVEL === 'debug' && console.log(fmt('debug', m, meta)),
+    debug: (m, meta) => config.LOG_LEVEL === 'debug' && console.log(fmt('debug', m, meta)),
     info: (m, meta) => console.log(fmt('info', m, meta)),
     warn: (m, meta) => console.warn(fmt('warn', m, meta)),
     error: (m, meta) => console.error(fmt('error', m, meta)),
@@ -122,32 +195,72 @@ export interface Container {
     orgs: OrganizationRepository;
     workspaces: WorkspaceRepository;
     agents: AgentRepository;
-    calls: MemoryCallRepository;
-    traces: MemoryTraceRepository;
-    numbers: MemoryPhoneNumberRepository;
-    campaigns: MemoryCampaignRepository;
-    leads: MemoryLeadRepository;
-    dispatchAudit: MemoryDispatchAuditRepository;
-    credentials: MemoryCredentialRepository;
-    verificationCodes: MemoryVerificationCodeRepository;
-    sessions: MemorySessionRepository;
-    memberships: MemoryMembershipRepository;
-    invitations: MemoryInvitationRepository;
-    apiKeys: MemoryApiKeyRepository;
+    // Persisted to Postgres when DATABASE_URL is set — typed to interfaces so the
+    // memory and Postgres implementations are interchangeable.
+    credentials: CredentialRepository;
+    verificationCodes: VerificationCodeRepository;
+    sessions: SessionRepository;
+    memberships: MembershipRepository;
+    invitations: InvitationRepository;
+    apiKeys: ApiKeyRepository;
+    providerCredentials: ProviderCredentialRepository;
+    roles: CustomRoleRepository;
+    // Runtime operational data — in-memory this pass (tables exist; next increment).
+    // Telephony operational data — Postgres when DATABASE_URL is set (jsonb-envelope),
+    // memory otherwise. Typed to interfaces so both fit.
+    numbers: PhoneNumberRepository;
+    campaigns: CampaignRepository;
+    leads: LeadRepository;
+    dispatchAudit: DispatchAuditRepository;
+    // Still in-memory in both modes: calls/traces are runtime-generated (no real
+    // calls yet) and the lexicon moves to Postgres with them next.
+    calls: CallRepository;
+    traces: TraceRepository;
+    lexicon: MemoryLexiconRepository;
   };
 
   services: {
     workspaces: WorkspaceService;
     agents: AgentService;
     calls: CallService;
+    /** Write side of the call log: aggregates worker events into a Call + trace. */
+    callIngest: CallIngestService;
     numbers: NumberService;
     campaigns: CampaignService;
     auth: AuthService;
     memberships: MembershipService;
     invitations: InvitationService;
     apiKeys: ApiKeyService;
+    /** BYOK credentials — customers' own model/speech provider keys. */
+    providerCredentials: ProviderCredentialService;
+    /** Custom roles + the permission catalog the role editor renders. */
+    roles: RoleService;
+    /** Knowledge (RAG): sources, chunking, keyword retrieval. */
+    knowledge: KnowledgeService;
+    /** Tools registry + server-side execution. */
+    tools: ToolService;
+    /** Webhook endpoints + HMAC-signed delivery. */
+    webhooks: WebhookService;
+    /** Eval suites, runs, and assertion scoring. */
+    evals: EvalService;
+    /** Mints LiveKit rooms + tokens and dispatches the agent worker. */
+    livekit: LiveKitService;
+    sip: SipService;
     compliance: ReturnType<typeof buildComplianceChain>;
   };
+
+  /**
+   * What a customer could configure, derived from registered factories. Drives the
+   * dashboard's credential forms so no vendor form is hardcoded in the frontend.
+   */
+  providerCatalog: Array<{
+    key: string;
+    kind: 'stt' | 'llm' | 'tts';
+    label: string;
+    configFields: string[];
+    secretFields: string[];
+    note?: string;
+  }>;
 
   /** Regulatory controls. docs/14. */
   compliance: {
@@ -159,7 +272,16 @@ export interface Container {
   traceRecorder: TraceRecorder;
 }
 
-export function createContainer(): Container {
+export interface ContainerOptions {
+  /**
+   * When supplied, the account/config repositories are Postgres-backed and data
+   * survives a restart. Omit for in-memory (dev without DATABASE_URL, and tests).
+   * main.ts constructs this from `config.DATABASE_URL`.
+   */
+  db?: DbHandle;
+}
+
+export function createContainer(opts: ContainerOptions = {}): Container {
   const logger = createLogger({ service: 'control-plane' });
   const events = new EventBus<PipelineEvents>();
 
@@ -244,30 +366,82 @@ export function createContainer(): Container {
   };
 
   // -- Repositories --------------------------------------------------------
-  const repositories = {
-    users: new MemoryUserRepository(),
-    orgs: new MemoryOrganizationRepository(),
-    workspaces: new MemoryWorkspaceRepository(),
-    agents: new MemoryAgentRepository(),
-    calls: new MemoryCallRepository(),
-    traces: new MemoryTraceRepository(),
-    numbers: new MemoryPhoneNumberRepository(),
-    campaigns: new MemoryCampaignRepository(),
-    leads: new MemoryLeadRepository(),
-    dispatchAudit: new MemoryDispatchAuditRepository(),
-    credentials: new MemoryCredentialRepository(),
-    verificationCodes: new MemoryVerificationCodeRepository(),
-    sessions: new MemorySessionRepository(),
-    memberships: new MemoryMembershipRepository(),
-    invitations: new MemoryInvitationRepository(),
-    apiKeys: new MemoryApiKeyRepository(),
+  // Runtime operational data stays in-memory in BOTH modes this pass — its tables
+  // exist but the Postgres repos are the next increment. It is generated per call
+  // and not needed to resolve a login, so a restart losing it is acceptable.
+  // Postgres when a DbHandle is present (DATABASE_URL set), else in-memory. Declared
+  // once, up front, because the repository groups below all branch on it.
+  const db = opts.db;
+
+  // Call log + traces: Postgres when a DbHandle is present (so call history survives
+  // a restart), else in-memory. The lexicon stays in-memory this pass.
+  const operational = {
+    calls: db ? new PostgresCallRepository(db) : new MemoryCallRepository(),
+    traces: db ? new PostgresTraceRepository(db) : new MemoryTraceRepository(),
+    lexicon: new MemoryLexiconRepository(),
   };
+
+  // Telephony operational data: Postgres when a DbHandle is present, else memory.
+  const telephony = db
+    ? {
+        numbers: new PostgresPhoneNumberRepository(db),
+        campaigns: new PostgresCampaignRepository(db),
+        leads: new PostgresLeadRepository(db),
+        dispatchAudit: new PostgresDispatchAuditRepository(db),
+      }
+    : {
+        numbers: new MemoryPhoneNumberRepository(),
+        campaigns: new MemoryCampaignRepository(),
+        leads: new MemoryLeadRepository(),
+        dispatchAudit: new MemoryDispatchAuditRepository(),
+      };
+
+  // The account/config layer: Postgres when a DbHandle is present, else memory.
+  // The whole layer swaps together so there is never a half-persisted account.
+  const repositories: Container['repositories'] = db
+    ? {
+        users: new PostgresUserRepository(db),
+        orgs: new PostgresOrganizationRepository(db),
+        workspaces: new PostgresWorkspaceRepository(db),
+        agents: new PostgresAgentRepository(db),
+        credentials: new PostgresCredentialRepository(db),
+        verificationCodes: new PostgresVerificationCodeRepository(db),
+        sessions: new PostgresSessionRepository(db),
+        memberships: new PostgresMembershipRepository(db),
+        invitations: new PostgresInvitationRepository(db),
+        apiKeys: new PostgresApiKeyRepository(db),
+        providerCredentials: new PostgresProviderCredentialRepository(db),
+        roles: new PostgresCustomRoleRepository(db),
+        ...telephony,
+        ...operational,
+      }
+    : {
+        users: new MemoryUserRepository(),
+        orgs: new MemoryOrganizationRepository(),
+        workspaces: new MemoryWorkspaceRepository(),
+        agents: new MemoryAgentRepository(),
+        credentials: new MemoryCredentialRepository(),
+        verificationCodes: new MemoryVerificationCodeRepository(),
+        sessions: new MemorySessionRepository(),
+        memberships: new MemoryMembershipRepository(),
+        invitations: new MemoryInvitationRepository(),
+        apiKeys: new MemoryApiKeyRepository(),
+        providerCredentials: new MemoryProviderCredentialRepository(),
+        roles: new MemoryCustomRoleRepository(),
+        ...telephony,
+        ...operational,
+      };
 
   // -- Compliance controls -------------------------------------------------
   // docs/14: these are constraints, not documentation. LocalKms throws if used
   // in production without an explicit master key.
   const audit = new AuditLogger(new MemoryAuditLogStore());
-  const encryption = new EncryptionService(new LocalKms(), new MemoryTenantKeyStore());
+  // Persist the tenant key store when Postgres is on, so BYOK secrets stay
+  // decryptable across restarts. In-memory otherwise (keys reset on reboot).
+  const encryption = new EncryptionService(
+    new LocalKms(config.KMS_MASTER_KEY),
+    db ? new PostgresTenantKeyStore(db) : new MemoryTenantKeyStore(),
+  );
 
   // -- Services ------------------------------------------------------------
   const workspaces = new WorkspaceService(repositories.workspaces, repositories.orgs);
@@ -295,13 +469,51 @@ export function createContainer(): Container {
     audit,
   });
 
+  // Declared before `services` so the knowledge service's embedder can reuse it.
+  const providerCredentials = new ProviderCredentialService(
+    repositories.providerCredentials,
+    encryption,
+    audit,
+    // Platform keys are the fallback when a tenant hasn't supplied their own.
+    { get: async (name) => { const v = platformSecret(name); if (!v) throw new Error(`missing platform secret: ${name}`); return v; } },
+    logger,
+  );
+
+  // RAG vector store — a deployment choice (bring your own). 'memory' by default.
+  const vectorStore = createVectorStore(vectorDbConfig(config));
+
+  // Per-workspace carrier: BYOK Twilio creds (stored via provider credentials) win,
+  // else the platform env pair, else null → the mock provider. This is what makes
+  // "search + buy a real number in-app" work once Twilio is connected.
+  const twilioProviderFor = async (scope: import('./domain/tenant.js').WorkspaceScope) => {
+    let sid: string | undefined;
+    let token: string | undefined;
+    try {
+      const resolver = await providerCredentials.resolverFor(scope);
+      sid = await resolver.get('twilio.accountSid').catch(() => undefined);
+      token = await resolver.get('twilio.authToken').catch(() => undefined);
+    } catch {
+      /* no stored creds — fall through to env */
+    }
+    sid = sid || config.TWILIO_ACCOUNT_SID;
+    token = token || config.TWILIO_AUTH_TOKEN;
+    return sid && token ? new TwilioNumberProvider(sid, token) : null;
+  };
+
   const services = {
     workspaces,
     agents,
     auth,
     memberships,
     calls: new CallService(repositories.calls, repositories.traces),
-    numbers: new NumberService(repositories.numbers, repositories.agents, repositories.orgs),
+    callIngest: new CallIngestService(repositories.calls, repositories.traces, agents),
+    numbers: new NumberService(
+      repositories.numbers,
+      repositories.agents,
+      repositories.orgs,
+      new MockNumberProvider(),
+      twilioProviderFor,
+    ),
     campaigns: new CampaignService(
       repositories.campaigns,
       repositories.leads,
@@ -323,6 +535,26 @@ export function createContainer(): Container {
       hashPepper: secrets.hashPepper,
       logger,
     }),
+    providerCredentials,
+    roles: new RoleService(repositories.roles, audit),
+    knowledge: createKnowledgeService({
+      vectorStore,
+      // Per-workspace BYOK embedder: reuses the workspace's OpenAI key. null (no key)
+      // → the knowledge service falls back to its lexical engine.
+      embedderFor: async (scope) => {
+        try {
+          const resolver = await providerCredentials.resolverFor(scope);
+          return createEmbedder({ apiKey: await resolver.get('openai.apiKey'), model: config.EMBEDDINGS_MODEL });
+        } catch {
+          return null;
+        }
+      },
+    }),
+    tools: createToolService(),
+    webhooks: createWebhookService(encryption),
+    evals: createEvalService(),
+    livekit: liveKitFromEnv(),
+    sip: sipFromEnv(),
     compliance: buildComplianceChain(),
   };
 
@@ -340,6 +572,7 @@ export function createContainer(): Container {
     repositories,
     services,
     compliance: { audit, encryption, postures },
+    providerCatalog: PROVIDER_CATALOG,
     traceRecorder,
   };
 }

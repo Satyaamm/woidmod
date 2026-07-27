@@ -144,6 +144,9 @@ export interface NumberProvider {
   search(query: SearchNumbersQuery): Promise<AvailableNumber[]>;
   purchase(e164: string, country: string): Promise<{ carrier: string; monthlyCostUsd: number }>;
   release(e164: string): Promise<void>;
+  /** Point the number's inbound voice path at a URL (LiveKit SIP). Optional — only
+   *  real carriers implement it; the mock does not. */
+  configureInbound?(e164: string, voiceUrl: string): Promise<void>;
   /**
    * Reputation lookup across the analytics providers that drive "Spam Likely".
    * STUB — see `MockNumberProvider.checkReputation`.
@@ -228,7 +231,23 @@ export class NumberService {
     private readonly agents: AgentRepository,
     private readonly orgs: OrganizationRepository,
     private readonly provider: NumberProvider = new MockNumberProvider(),
+    /**
+     * Resolve a per-workspace carrier (BYOK Twilio) at request time. Returns null
+     * when the workspace hasn't connected a carrier, so we fall back to `provider`
+     * (the mock) — the numbers UI works either way, and buying goes real once Twilio
+     * credentials are set.
+     */
+    private readonly providerFor?: (scope: WorkspaceScope) => Promise<NumberProvider | null>,
   ) {}
+
+  /** The carrier to use for this workspace: its BYOK provider, else the default. */
+  private async carrier(scope: WorkspaceScope): Promise<NumberProvider> {
+    if (this.providerFor) {
+      const resolved = await this.providerFor(scope).catch(() => null);
+      if (resolved) return resolved;
+    }
+    return this.provider;
+  }
 
   async list(scope: WorkspaceScope, opts?: PhoneNumberListOptions) {
     require_(scope, 'workspace:read');
@@ -251,7 +270,7 @@ export class NumberService {
     localPresence: LocalPresenceRule | null;
   }> {
     require_(scope, 'workspace:read');
-    const items = await this.provider.search(query);
+    const items = await (await this.carrier(scope)).search(query);
     return { items, localPresence: localPresenceRuleFor(query.country) };
   }
 
@@ -277,7 +296,7 @@ export class NumberService {
       if (!agent) throw new NotFoundError('agent', input.agentId);
     }
 
-    const { carrier, monthlyCostUsd } = await this.provider.purchase(input.e164, country);
+    const { carrier, monthlyCostUsd } = await (await this.carrier(scope)).purchase(input.e164, country);
     const now = new Date().toISOString();
 
     const number = phoneNumberSchema.parse({
@@ -305,11 +324,25 @@ export class NumberService {
     return this.numbers.create(scope, number);
   }
 
+  /**
+   * Connect a bought number to inbound SIP: point its carrier voice webhook at the
+   * given URL (our LiveKit-SIP TwiML), so a PSTN call to it reaches the agent.
+   */
+  async connectSip(scope: WorkspaceScope, numberId: string, voiceUrl: string): Promise<void> {
+    require_(scope, 'number:manage');
+    const number = await this.get(scope, numberId);
+    const carrier = await this.carrier(scope);
+    if (!carrier.configureInbound) {
+      throw new ConflictError('the active carrier does not support automatic SIP configuration');
+    }
+    await carrier.configureInbound(number.e164, voiceUrl);
+  }
+
   /** Release back to the carrier. Soft-deletes locally so call records resolve. */
   async release(scope: WorkspaceScope, numberId: string): Promise<void> {
     require_(scope, 'number:manage');
     const number = await this.get(scope, numberId);
-    await this.provider.release(number.e164);
+    await (await this.carrier(scope)).release(number.e164);
     await this.numbers.delete(scope, numberId);
   }
 

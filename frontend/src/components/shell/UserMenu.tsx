@@ -10,7 +10,6 @@ import {
 } from '@ant-design/icons';
 import { Avatar, Dropdown, Flex, Typography } from 'antd';
 import type { MenuProps } from 'antd';
-import { useCurrentScope } from '@/lib/scope';
 import { useSessionStore } from '@/stores/session-store';
 import { useUiStore } from '@/stores/ui-store';
 
@@ -20,7 +19,6 @@ export function UserMenu() {
   const logOut = useSessionStore((s) => s.logOut);
   const theme = useUiStore((s) => s.theme);
   const toggleTheme = useUiStore((s) => s.toggleTheme);
-  const { org, workspace } = useCurrentScope();
 
   if (!user) return null;
 
@@ -53,8 +51,8 @@ export function UserMenu() {
 
   const onClick: MenuProps['onClick'] = async ({ key }) => {
     if (key === 'theme') return toggleTheme();
-    if (key === 'profile' && org && workspace) {
-      return router.push(`/orgs/${org.slug}/${workspace.slug}/settings/account`);
+    if (key === 'profile') {
+      return router.push('/account');
     }
     if (key === 'logout') {
       await logOut();

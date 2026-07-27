@@ -15,6 +15,7 @@ import {
   minorUnits,
   pause,
   runRules,
+  spellIdentifier,
   speakEmail,
   speakUrl,
   type LocaleFormatter,
@@ -304,19 +305,7 @@ const formatter: LocaleFormatter = {
   },
 
   identifier(token, ctx) {
-    // docs/03 3.7. Letters are spelled, digits are spelled, and the whole thing is broken
-    // into groups with a pause so the caller can write it down.
-    const p = pause(ctx, 300);
-    const clean = token.replace(/-/g, '');
-    const chunks = groupDigits(clean, ctx.digitGroupSize);
-    return chunks
-      .map((chunk) =>
-        chunk
-          .split('')
-          .map((ch) => (/\d/.test(ch) ? digitWord(ch) : ch.toUpperCase()))
-          .join(' '),
-      )
-      .join(p);
+    return spellIdentifier(token, ctx, digitWord);
   },
 
   acronym(token, ctx) {

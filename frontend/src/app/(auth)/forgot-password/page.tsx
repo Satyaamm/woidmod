@@ -55,7 +55,7 @@ export default function ForgotPasswordPage() {
           label="Work email"
           rules={[{ required: true, message: 'Enter your email' }, { type: 'email', message: 'That email looks wrong' }]}
         >
-          <Input size="large" prefix={<MailOutlined />} placeholder="you@company.com" autoFocus />
+          <Input size="large" prefix={<MailOutlined />} placeholder="you@example.com" autoFocus />
         </Form.Item>
         <Button type="primary" size="large" htmlType="submit" block loading={submitting}>
           Send reset link

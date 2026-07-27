@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Alert, Button, Flex, Input, Typography } from 'antd';
-import { authApi } from '@/lib/api';
+import { authApi, sessionApi } from '@/lib/api';
 import { AuthLayout } from '@/features/auth/components/AuthLayout';
 import { useSessionStore } from '@/stores/session-store';
 
@@ -30,12 +30,21 @@ function VerifyEmailInner() {
     setSubmitting(true);
     setError(null);
     try {
-      const { session } = await authApi.verifyEmail({ email, code: value });
+      // Verification confirms the address only; the session already exists from
+      // signup. Refresh it so the emailVerified flag and any newly-unlocked
+      // permissions are reflected before we route.
+      await authApi.verifyEmail({ email, code: value });
+      const session = await sessionApi.get();
       setSession(session);
-      const org = session.organizations.find((o) => o.id === session.currentOrgId);
-      const ws = session.workspaces.find((w) => w.id === session.currentWorkspaceId);
-      // Straight to a working agent — no wizard, no forms (docs/11 §A).
-      router.push(org && ws ? `/orgs/${org.slug}/${ws.slug}/welcome` : '/orgs');
+      const org = session.organizations.find((o) => o.id === session.currentOrgId) ?? session.organizations[0];
+      const ws =
+        session.workspaces.find((w) => w.id === session.currentWorkspaceId) ??
+        session.workspaces.find((w) => w.orgId === org?.id);
+      // Straight to a working agent — no wizard, no forms (docs/11 §A). Never route
+      // to bare `/orgs` (no page there); fall back to the org's workspaces list.
+      if (org && ws) router.push(`/orgs/${org.slug}/${ws.slug}/welcome`);
+      else if (org) router.push(`/orgs/${org.slug}/workspaces`);
+      else router.push('/login');
     } catch (err) {
       setError((err as Error).message);
       setCode('');

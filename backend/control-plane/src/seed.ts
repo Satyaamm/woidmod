@@ -26,15 +26,27 @@ export interface SeedResult {
   }>;
 }
 
+// Generic, recognizable placeholder companies (Contoso/Globex) so the seeded
+// demo reads like real, properly-named accounts — not "Acme Eu / Founder". The
+// org name and person name are DERIVED from these by the real signup path, so
+// clean inputs here mean clean derived names in the dashboard.
 const ACCOUNTS = [
-  { email: 'founder@acme-eu.example', country: 'DE', timezone: 'Europe/Berlin', locale: 'de-DE' },
-  { email: 'founder@acme-us.example', country: 'US', timezone: 'America/New_York', locale: 'en-US' },
+  { email: 'ava.mueller@contoso.example', country: 'DE', timezone: 'Europe/Berlin', locale: 'de-DE' },
+  { email: 'john.rivera@globex.example', country: 'US', timezone: 'America/New_York', locale: 'en-US' },
 ];
 
 export async function seed(c: Container): Promise<SeedResult> {
   const accounts: SeedResult['accounts'] = [];
 
   for (const spec of ACCOUNTS) {
+    // Idempotent: with Postgres the seed runs on every boot, so an account seeded
+    // last time must not collide. In-memory starts empty, so this is a no-op there.
+    const existing = await c.repositories.users.findByEmail(spec.email);
+    if (existing) {
+      c.logger.info('seed account already present, skipping', { email: spec.email });
+      continue;
+    }
+
     const result = await c.services.auth.signup({
       email: spec.email,
       password: 'dev-password-not-for-production',

@@ -8,8 +8,8 @@ convention.
 
 ```bash
 # 1. Fork, then clone your fork
-git clone https://github.com/<you>/VoiceAI.git
-cd VoiceAI
+git clone https://github.com/<you>/woidmod.git
+cd woidmod
 
 # 2. Branch. Never work on main.
 git checkout -b feat/semantic-endpointer-prosody
@@ -63,7 +63,7 @@ lives in [`docs/`](./docs).
 
 - `.env` files, API keys, tokens, certificates, KMS material
 - Call recordings, transcripts, or any real caller data — these are **personal data**,
-  and PHI in healthcare workspaces (see the architecture doc)
+  and PHI in healthcare (HIPAA) workspaces
 - Model weights or checkpoints — use object storage
 - `node_modules/`, build output
 

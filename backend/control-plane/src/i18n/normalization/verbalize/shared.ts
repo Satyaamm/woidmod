@@ -150,6 +150,33 @@ export function expandYear(raw: string): number {
 // not grammar, which is why it can be shared.
 // ---------------------------------------------------------------------------
 
+/**
+ * Order IDs and reference numbers (docs/03 3.7).
+ *
+ * Read character by character — letters as letter names, digits as number words in the
+ * caller's language — broken into groups with a pause so the caller can write it down.
+ * An existing hyphenation is respected: whoever printed the ID on the invoice already
+ * chose the grouping the caller is looking at.
+ */
+export function spellIdentifier(
+  token: string,
+  ctx: NormalizationContext,
+  digitWord: (d: string) => string,
+): string {
+  const p = pause(ctx, 300);
+  const chunks = token.includes('-')
+    ? token.split('-').filter((c) => c.length > 0)
+    : groupDigits(token, ctx.digitGroupSize);
+  return chunks
+    .map((chunk) =>
+      chunk
+        .split('')
+        .map((ch) => (/\d/.test(ch) ? digitWord(ch) : ch.toUpperCase()))
+        .join(' '),
+    )
+    .join(p);
+}
+
 /** Spell a token letter by letter, e.g. `HR` -> "H R". */
 export function spellLetters(token: string, gap = ' '): string {
   return token.toUpperCase().split('').join(gap);
@@ -297,11 +324,15 @@ const DATE_SHORT_RE = /\b(\d{1,2})\/(\d{1,2})\b/g;
  * if it has 7–15 digits AND at least one of (leading `+`, parenthesised area code,
  * three or more separated groups).
  */
-const PHONE_RE = /(?:\+\d{1,3}[\s.\-/]?)?(?:\(\d{1,5}\)[\s.\-/]?)?\d{2,5}(?:[\s.\-/]\d{2,5}){1,6}|\+\d{7,15}/g;
+const PHONE_RE =
+  /(?:\+\d{1,3}[\s.\-/]?)?(?:\(\d{1,5}\)[\s.\-/]?)?\d{1,8}(?:[\s.\-/]\d{1,8}){1,7}|\+\d{7,15}/g;
 
 const CURRENCY_PREFIX_RE = /([$€£¥₹])\s?(\d[\d.,\u00a0\u202f ]{0,20}\d|\d)/g;
+// A trailing `\b` would fail after `€` (a non-word character) — precisely the case that
+// matters most in the EU. A negative lookahead works for symbols and for alphabetic codes,
+// and still stops `EUR` from matching inside `EUROPE`.
 const CURRENCY_SUFFIX_RE =
-  /(\d[\d.,\u00a0\u202f ]{0,20}\d|\d)\s?(€|£|\$|EUR|USD|GBP|CHF|Euros?|euros?|Dollars?|dollars?|Pfund|pounds?|livres?|sterline)\b/g;
+  /(\d[\d.,\u00a0\u202f ]{0,20}\d|\d)\s?(€|£|\$|EUR|USD|GBP|CHF|Euros?|euros?|Dollars?|dollars?|Pfund|pounds?|livres?|sterline)(?![\p{L}\p{N}])/gu;
 
 const PERCENT_RE = /(\d[\d.,\u00a0\u202f ]{0,20}|\d)\s?%/g;
 
@@ -455,6 +486,14 @@ export function buildRules(f: LocaleFormatter): readonly Rule[] {
     },
   });
 
+  // Identifiers are claimed BEFORE currency/range/number: an order ID like `AB12-9C7`
+  // contains a perfectly good "12-9" range and a perfectly good "12".
+  rules.push({
+    kind: 'digit-group',
+    pattern: IDENTIFIER_RE,
+    render: (m, ctx) => f.identifier(m[0], ctx),
+  });
+
   rules.push({
     kind: 'currency',
     pattern: CURRENCY_PREFIX_RE,
@@ -499,12 +538,6 @@ export function buildRules(f: LocaleFormatter): readonly Rule[] {
     kind: 'range',
     pattern: SYMBOL_RANGE_RE,
     render: (m, ctx) => f.range(m[1] ?? '', m[2] ?? '', ctx),
-  });
-
-  rules.push({
-    kind: 'digit-group',
-    pattern: IDENTIFIER_RE,
-    render: (m, ctx) => f.identifier(m[0], ctx),
   });
 
   rules.push({
@@ -596,6 +629,9 @@ export const NOT_AN_ACRONYM = new Set(['OK', 'TV', 'ID', 'PC', 'AM', 'PM', 'A', 
  * comma over-pauses. We use a narrow no-break space.
  */
 export function defaultAcronym(token: string, ctx: NormalizationContext, letterGap = ' '): string | null {
+  // A tenant lexicon entry owns the token: spelling out "ACME" here would destroy the
+  // brand name before the lexicon stage ever gets to see it.
+  if (ctx.lexiconTerms.has(token.toUpperCase())) return null;
   const override = ctx.acronyms[token];
   if (override === 'word') return token;
   if (override !== undefined && override !== 'spell') return override;

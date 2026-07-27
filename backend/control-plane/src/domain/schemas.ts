@@ -7,6 +7,9 @@
 
 import { z } from 'zod';
 
+import { isReservedSlug, reservedSlugMessage, type SlugKind } from './reserved-slugs.js';
+import { agentModalitySchema, flowSpecSchema } from './flow-schema.js';
+
 // ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
@@ -34,6 +37,25 @@ export const postalAddressSchema = z.object({
 
 export const regionSchema = z.enum(['us-east', 'us-west', 'eu-west', 'eu-central']);
 export const modeSchema = z.enum(['test', 'live']);
+
+/**
+ * Slug validation, shared by organizations and workspaces.
+ *
+ * The reserved-word check is the routing-collision guard described in
+ * `domain/reserved-slugs.ts`: a workspace slug occupies the same URL position as any
+ * org-level route, so `/orgs/acme/settings` must not be ambiguous.
+ */
+function slugSchema(kind: SlugKind) {
+  return z
+    .string()
+    .min(2)
+    .max(48)
+    .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'lowercase alphanumerics and hyphens')
+    .refine((s) => !isReservedSlug(kind, s), (s) => ({ message: reservedSlugMessage(kind, s) }));
+}
+
+export const orgSlugSchema = slugSchema('organization');
+export const workspaceSlugSchema = slugSchema('workspace');
 
 /** Region -> the jurisdiction its data physically sits in. Drives residency checks. */
 export const REGION_META: Record<
@@ -78,11 +100,7 @@ export const organizationSchema = z.object({
   parentOrgId: z.string().nullable().optional(),
   name: z.string().min(1).max(120),
   legalName: z.string().max(200).optional(),
-  slug: z
-    .string()
-    .min(2)
-    .max(48)
-    .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'lowercase alphanumerics and hyphens'),
+  slug: orgSlugSchema,
   website: z.string().url().optional(),
   industry: z.string().max(80).optional(),
   size: orgSizeSchema.optional(),
@@ -148,11 +166,7 @@ export const workspaceSchema = z.object({
   id: z.string(),
   orgId: z.string(),
   name: z.string().min(1).max(120),
-  slug: z
-    .string()
-    .min(2)
-    .max(48)
-    .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/),
+  slug: workspaceSlugSchema,
   description: z.string().max(500).optional(),
   region: regionSchema,
   regionLocked: z.boolean().default(false),
@@ -218,9 +232,17 @@ export const agentSchema = z.object({
   description: z.string().max(500).default(''),
   language: z.string().min(2).default('en-US'),
   prompt: z.string().min(1).max(100_000),
+  /** Voice-only, video-capable, or both. Gates which flow nodes are legal. */
+  modality: agentModalitySchema.default('voice'),
   voice: voiceConfigSchema,
   pipeline: pipelineConfigSchema,
   tools: z.array(toolConfigSchema).default([]),
+  /**
+   * Optional deterministic flow graph (the xyflow builder's output). Absent = the
+   * agent runs in pure prompt mode. Present = the orchestrator follows the graph for
+   * the steps that must not improvise. Validated by `validateFlow` on publish.
+   */
+  flow: flowSpecSchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   stats: z.object({
@@ -240,7 +262,7 @@ export const agentSchema = z.object({
 
 export const createWorkspaceInput = z.object({
   name: z.string().min(1).max(120),
-  slug: z.string().min(2).max(48).regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/).optional(),
+  slug: workspaceSlugSchema.optional(),
   description: z.string().max(500).optional(),
   region: regionSchema,
   compliance: complianceProfileSchema.partial().optional(),
@@ -259,8 +281,11 @@ export const createAgentInput = z.object({
   description: z.string().max(500).optional(),
   language: z.string().min(2).default('en-US'),
   prompt: z.string().min(1).max(100_000),
+  modality: agentModalitySchema.optional(),
   voice: voiceConfigSchema.partial().optional(),
   pipeline: pipelineConfigSchema.partial().optional(),
+  /** The visual builder's compiled graph. Validated by `validateFlow` on publish. */
+  flow: flowSpecSchema.optional(),
 });
 
 export const updateAgentInput = createAgentInput.partial();

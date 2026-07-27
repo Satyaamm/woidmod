@@ -29,14 +29,7 @@ pgdata/
 *.dump
 *.sql.gz
 
-# --- Rust (media/, orchestrator/) ------------------------------------------
-target/
-**/*.rs.bk
-Cargo.lock.orig
-# Cargo.lock IS committed for binaries (reproducible builds); only ignore it for
-# libraries. media/ and orchestrator/ are binaries, so it stays tracked.
-
-# --- Python (inference/, orchestrator/) ------------------------------------
+# --- Python (orchestrator/) ------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class

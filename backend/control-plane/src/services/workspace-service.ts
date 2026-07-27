@@ -8,6 +8,7 @@
  */
 
 import { newId } from '../domain/ids.js';
+import { deconflictSlug } from '../domain/reserved-slugs.js';
 import {
   complianceProfileSchema,
   spendCapsSchema,
@@ -153,12 +154,19 @@ export class WorkspaceService {
   }
 }
 
+/**
+ * Derives a slug from a name. Deconflicts rather than rejecting: this path has no
+ * user to show an error to, and a business unit genuinely called "Settings" must
+ * still be creatable — it just becomes `settings-ws`.
+ */
 function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'workspace';
+  const base =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'workspace';
+  return deconflictSlug('workspace', base);
 }
 
 // Local import guard to avoid a cycle with compliance.ts

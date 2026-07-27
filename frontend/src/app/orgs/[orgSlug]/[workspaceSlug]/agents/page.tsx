@@ -9,6 +9,7 @@ import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { LatencyBadge } from '@/components/common/LatencyBadge';
 import { PageHeader } from '@/components/common/PageHeader';
 import { AgentStatusTag } from '@/components/common/StatusTag';
+import { TableSkeleton } from '@/components/common/Skeletons';
 import { useAsync } from '@/hooks/useAsync';
 import { agentApi } from '@/lib/api';
 import type { Agent, AgentStatus } from '@/lib/contract';
@@ -168,7 +169,11 @@ export default function AgentsPage() {
           />
         </Flex>
 
-        <AsyncBoundary state={state} isEmpty={(agents) => agents.length === 0}>
+        <AsyncBoundary
+          state={state}
+          isEmpty={(agents) => agents.length === 0}
+          skeleton={<TableSkeleton columns={9} rows={8} />}
+        >
           {(agents) => {
             const rows = agents.filter(
               (a) =>

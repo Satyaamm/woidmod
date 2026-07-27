@@ -27,6 +27,12 @@ function MicrosoftMark() {
 }
 
 export function SsoButtons({ label = 'or continue with' }: { label?: string }) {
+  // SSO (Google/Microsoft/SAML) isn't wired yet — these buttons pointed at a
+  // /v1/auth/sso/* route that doesn't exist (404). Hidden until the OAuth flows are
+  // built (see the SSO task). Flip to true to restore once /auth/sso/* is live.
+  const SSO_ENABLED = false;
+  if (!SSO_ENABLED) return null;
+
   return (
     <>
       <Flex gap={10}>

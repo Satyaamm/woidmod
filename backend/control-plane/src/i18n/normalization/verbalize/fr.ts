@@ -30,6 +30,7 @@ import {
   minorUnits,
   pause,
   runRules,
+  spellIdentifier,
   speakEmail,
   speakUrl,
   type LocaleFormatter,
@@ -341,16 +342,7 @@ const formatter: LocaleFormatter = {
   },
 
   identifier(token, ctx) {
-    const p = pause(ctx, 300);
-    const clean = token.replace(/-/g, '');
-    return groupDigits(clean, ctx.digitGroupSize)
-      .map((chunk) =>
-        chunk
-          .split('')
-          .map((ch) => (/\d/.test(ch) ? digitWord(ch) : ch.toUpperCase()))
-          .join(' '),
-      )
-      .join(p);
+    return spellIdentifier(token, ctx, digitWord);
   },
 
   acronym(token, ctx) {

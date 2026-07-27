@@ -7,6 +7,7 @@
  */
 
 import { newId } from '../domain/ids.js';
+import { validateFlow } from '../domain/flow-schema.js';
 import type { z } from 'zod';
 import {
   agentSchema,
@@ -30,10 +31,18 @@ import {
 /** Sensible starting pipeline. Speculative prefill and semantic endpointing ON by default —
  *  the whole latency thesis is worthless if the defaults are the slow path. */
 const DEFAULT_PIPELINE = {
-  sttProvider: 'mock-stt',
-  llmProvider: 'mock-llm',
-  llmModel: 'mock-fast',
-  ttsProvider: 'mock-tts',
+  // Real providers, not mocks. A new agent must be able to hold a real
+  // conversation the moment credentials exist — wiring the sample agent to the
+  // simulator meant "talk to your agent" could never work, which defeats the
+  // 60-second activation path entirely (docs/11 §A).
+  //
+  // If no credentials are configured, the runtime endpoint reports exactly which
+  // are missing and the worker refuses the call with an actionable message. That
+  // is the honest failure; a silently-mocked call is not.
+  sttProvider: 'deepgram-stt',
+  llmProvider: 'anthropic-llm',
+  llmModel: 'claude-haiku-4-5',
+  ttsProvider: 'cartesia-tts',
   endpointingStrategy: 'semantic',
   bargeInStrategy: 'target-speaker',
   temperature: 0.3,
@@ -43,8 +52,8 @@ const DEFAULT_PIPELINE = {
 };
 
 const DEFAULT_VOICE = {
-  providerKey: 'mock-tts',
-  voiceId: 'mock-en-f',
+  providerKey: 'cartesia-tts',
+  voiceId: 'a0e99841-438c-4a64-b679-ae501e7d6091',
   speed: 1,
   lexicon: [],
 };
@@ -97,9 +106,11 @@ export class AgentService {
       description: input.description ?? '',
       language: input.language ?? 'en-US',
       prompt: input.prompt,
+      modality: input.modality ?? 'voice',
       voice: voiceConfigSchema.parse({ ...DEFAULT_VOICE, ...(input.voice ?? {}) }),
       pipeline: pipelineConfigSchema.parse({ ...DEFAULT_PIPELINE, ...(input.pipeline ?? {}) }),
       tools: [],
+      flow: input.flow,
       createdAt: now,
       updatedAt: now,
       stats: {
@@ -135,6 +146,9 @@ export class AgentService {
     if (patch.description !== undefined) merged.description = patch.description;
     if (patch.language !== undefined) merged.language = patch.language;
     if (patch.prompt !== undefined) merged.prompt = patch.prompt;
+    if (patch.modality !== undefined) merged.modality = patch.modality;
+    // The flow is a full replacement — the builder sends the whole compiled graph.
+    if (patch.flow !== undefined) merged.flow = patch.flow;
 
     // Nested config merges rather than replaces.
     if (patch.voice) merged.voice = voiceConfigSchema.parse({ ...existing.voice, ...patch.voice });
@@ -159,6 +173,20 @@ export class AgentService {
 
     if (agent.status === 'archived') {
       throw new ConflictError('cannot publish an archived agent');
+    }
+
+    // A flow that can't run must not go live. The builder shows these as node badges;
+    // this is the server-side backstop so a bad graph can't be published past the UI.
+    if (agent.flow) {
+      const errors = validateFlow(agent.flow, {
+        modality: agent.modality,
+        toolIds: agent.tools.map((t) => t.id),
+      }).filter((i) => i.level === 'error');
+      if (errors.length > 0) {
+        throw new ConflictError(
+          `cannot publish: the flow has ${errors.length} error(s) — first: ${errors[0]!.message}`,
+        );
+      }
     }
 
     const nextVersion = agent.version + 1;

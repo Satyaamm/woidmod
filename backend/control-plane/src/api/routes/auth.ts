@@ -11,15 +11,21 @@
  * rule in here that looks like policy is a call into a service, by design.
  */
 
+import { isProduction } from '../../config.js';
 import type { Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
 import type { Container } from '../../container.js';
+import { z } from 'zod';
+import { orgRoleSchema, workspaceRoleSchema } from '../../domain/schemas.js';
 import {
   acceptInviteInput,
   createApiKeyInput,
   inviteInput,
   loginInput,
+  forgotPasswordInput,
+  resetPasswordInput,
+  mfaCodeInput,
   orgBillingDetailsInput,
   resendVerificationInput,
   signupInput,
@@ -56,7 +62,7 @@ type Vars = { principal: Principal; scope: TenantScope };
 export type AuthApp = Hono<{ Variables: Vars }>;
 type AuthCtx = Context<{ Variables: Vars }>;
 
-const isProd = () => process.env.NODE_ENV === 'production';
+const isProd = () => isProduction;
 
 export function registerAuthRoutes(app: AuthApp, container: AuthContainer): void {
   const { auth, memberships, invitations, apiKeys } = container.services;
@@ -150,6 +156,7 @@ export function registerAuthRoutes(app: AuthApp, container: AuthContainer): void
     const input = loginInput.parse(await c.req.json());
     const result = await auth.login(input.email, input.password, {
       orgId: input.orgId,
+      mfaCode: input.mfaCode,
       userAgent: c.req.header('user-agent'),
       ip: clientIp(c.req.raw),
     });
@@ -159,6 +166,29 @@ export function registerAuthRoutes(app: AuthApp, container: AuthContainer): void
       orgId: result.orgId,
       session: { expiresAt: result.session.expiresAt, token: result.session.token },
     });
+  });
+
+  /**
+   * Forgot password — always answers 200 identically, whether or not the email
+   * exists (no account enumeration). With no mail service wired, dev returns the
+   * reset link directly so the flow is testable; production emails it and never does.
+   */
+  post('/auth/forgot-password', async (c) => {
+    const { email } = forgotPasswordInput.parse(await c.req.json());
+    const { token } = await auth.requestPasswordReset(email);
+    const body: Record<string, unknown> = { ok: true };
+    if (!isProd() && token) {
+      body.devResetToken = token;
+      body.devResetUrl = `/reset-password?token=${encodeURIComponent(token)}`;
+    }
+    return c.json(body);
+  });
+
+  /** Complete a reset with the signed token; invalid/expired → 400 via the guard. */
+  post('/auth/reset-password', async (c) => {
+    const { token, password } = resetPasswordInput.parse(await c.req.json());
+    await auth.resetPassword(token, password);
+    return c.json({ ok: true });
   });
 
   /**
@@ -190,6 +220,37 @@ export function registerAuthRoutes(app: AuthApp, container: AuthContainer): void
     if (token) await auth.logout(token);
     deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
     return c.body(null, 204); // idempotent: logging out twice is a success
+  });
+
+  // -- MFA (TOTP) — authenticated ------------------------------------------
+  const requireUser = async (c: AuthCtx): Promise<{ userId: string; email: string }> => {
+    const token = readToken(c);
+    const verified = token ? await auth.verifySessionToken(token) : null;
+    const user = verified ? await container.repositories.users.findById(verified.userId) : null;
+    if (!user) throw new AuthenticationError('sign in first', 'session_invalid', 401);
+    return { userId: user.id, email: user.email };
+  };
+
+  /** Begin MFA setup — returns the secret + otpauth URI for the authenticator QR. */
+  post('/auth/mfa/enroll', async (c) => {
+    const { userId, email } = await requireUser(c);
+    return c.json(await auth.enrollMfa(userId, email));
+  });
+
+  /** Confirm setup with a current code; enables enforcement at login. */
+  post('/auth/mfa/confirm', async (c) => {
+    const { userId } = await requireUser(c);
+    const { code } = mfaCodeInput.parse(await c.req.json());
+    await auth.confirmMfa(userId, code);
+    return c.json({ ok: true });
+  });
+
+  /** Turn MFA off — requires a current code. */
+  post('/auth/mfa/disable', async (c) => {
+    const { userId } = await requireUser(c);
+    const { code } = mfaCodeInput.parse(await c.req.json());
+    await auth.disableMfa(userId, code);
+    return c.json({ ok: true });
   });
 
   /** Lightweight "who am I" for the app shell. 401 when unauthenticated. */
@@ -284,6 +345,34 @@ export function registerAuthRoutes(app: AuthApp, container: AuthContainer): void
 
   // -- Members --------------------------------------------------------------
   get('/v1/members', async (c) => c.json({ items: await memberships.list(c.get('scope')) }));
+
+  /**
+   * Update a member: an org role change and/or a full replacement of workspace
+   * grants. Last-owner, owner-grant, and workspace-existence rules live in the
+   * service. Returns the fresh member list.
+   */
+  patch('/v1/members/:id', async (c) => {
+    const scope = c.get('scope');
+    const body = z
+      .object({
+        role: orgRoleSchema.optional(),
+        workspaceRoles: z
+          .array(z.object({ workspaceId: z.string(), role: workspaceRoleSchema }))
+          .optional(),
+      })
+      .parse(await c.req.json());
+    const id = param(c, 'id');
+    if (body.role) await memberships.changeOrgRole(scope, id, body.role);
+    if (body.workspaceRoles) await memberships.setWorkspaceRoles(scope, id, body.workspaceRoles);
+    return c.json({ items: await memberships.list(scope) });
+  });
+
+  /** Remove a member. The service refuses to remove the last owner. */
+  del('/v1/members/:id', async (c) => {
+    const scope = c.get('scope');
+    await memberships.removeMember(scope, param(c, 'id'));
+    return c.json({ items: await memberships.list(scope) });
+  });
 
   // -- Invitations ----------------------------------------------------------
   get('/v1/invitations', async (c) =>

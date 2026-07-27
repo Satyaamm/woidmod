@@ -12,6 +12,7 @@
  * runs inside `withTenant`, even for a single-statement read.
  */
 
+import { config } from '../config.js';
 import { Pool, type PoolClient, type PoolConfig } from 'pg';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
@@ -61,19 +62,19 @@ function assertOrgId(orgId: string): string {
   return orgId;
 }
 
-export function createDb(config: DbConfig = {}): DbHandle {
-  const connectionString = config.connectionString ?? process.env.DATABASE_URL;
+export function createDb(opts: DbConfig = {}): DbHandle {
+  const connectionString = opts.connectionString ?? config.DATABASE_URL;
   if (!connectionString) {
     throw new Error('DATABASE_URL is not set — the Postgres repositories need a connection.');
   }
 
   const pool = new Pool({
-    max: Number(process.env.PGPOOL_MAX ?? 10),
+    max: opts.max ?? config.PGPOOL_MAX,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
     // Statement timeout keeps a runaway analytics query from pinning a connection.
     statement_timeout: 15_000,
-    ...config,
+    ...opts,
     connectionString,
   });
 

@@ -5,6 +5,7 @@ import enUS from 'antd/locale/en_US';
 import { ThemeProvider as AntdStyleProvider } from 'antd-style';
 import { useEffect, type ReactNode } from 'react';
 import { useUiStore } from '@/stores/ui-store';
+import { NavProgress } from '@/components/common/NavProgress';
 import { darkTheme, lightTheme, palette } from './tokens';
 
 /**
@@ -28,7 +29,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return (
     <ConfigProvider theme={config} locale={enUS} componentSize="middle">
       <AntdStyleProvider themeMode={mode} appearance={mode}>
-        <AntApp>{children}</AntApp>
+        <AntApp>
+          <NavProgress />
+          {children}
+        </AntApp>
       </AntdStyleProvider>
     </ConfigProvider>
   );

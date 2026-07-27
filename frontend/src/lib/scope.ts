@@ -7,7 +7,7 @@
  *
  * Naming note: docs/09 and docs/10 say "project"; docs/12 renamed the second
  * level to **Workspace** and `contract.ts` (the source of truth) follows that.
- * Routes therefore read `/orgs/acme/collections`.
+ * Routes therefore read `/orgs/:orgSlug/:workspaceSlug`.
  */
 import { useParams } from 'next/navigation';
 import { useSessionStore } from '@/stores/session-store';
