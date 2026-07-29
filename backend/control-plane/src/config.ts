@@ -117,6 +117,21 @@ const envSchema = z.object({
    * OAuth) need their own Embedder implementation; they are absent rather than
    * half-wired.
    */
+  /**
+   * Per-stage turn-latency budgets in milliseconds, as `stage=ms` pairs.
+   *
+   * DESIGN TARGETS, not measurements: the allowance each stage of a turn gets so the
+   * end-to-end reply stays under their sum.
+   *
+   * NO DEFAULT, deliberately. A budget nobody set is a number the product invented
+   * and then judged itself against — the same failure as printing a budget where a
+   * measurement belongs, one step removed. Unset means the analytics card shows what
+   * was measured and claims no target. `.env.example` carries the platform's own
+   * design figures as a suggested starting point, which is where a suggestion
+   * belongs; adopting them is a deployment's decision, not a silent inheritance.
+   */
+  LATENCY_BUDGETS_MS: z.string().optional(),
+
   EMBEDDINGS_PROVIDER: z.enum(['openai', 'azure-openai', 'compatible']).default('openai'),
   /** Required for `azure-openai` and `compatible`; ignored for `openai`. */
   EMBEDDINGS_BASE_URL: z.string().optional(),

@@ -12,23 +12,6 @@ import { formatMs, formatNumber, formatPercent, formatUsd, gradeLatency } from '
 import { useCurrentScope, useScope, wsPath } from '@/lib/scope';
 import { latencyThresholds } from '@/theme/tokens';
 
-/**
- * Fallback stage budgets, used only until the API answers.
- *
- * These are DESIGN TARGETS from docs/02, not measurements. This card previously
- * rendered them as the values — "Endpointing 94 ms · 24%" on a workspace that had
- * never placed a call — which made a spec look like telemetry. The real numbers
- * now come from `overview.latencyByStage`, where `measuredMs: null` means nothing
- * instruments that stage and the card says so.
- */
-const STAGE_BUDGET_FALLBACK = [
-  { key: 'endpointing', label: 'Endpointing', budgetMs: 94, measuredMs: null },
-  { key: 'stt', label: 'ASR finalize', budgetMs: 40, measuredMs: null },
-  { key: 'llm', label: 'LLM TTFT', budgetMs: 88, measuredMs: null },
-  { key: 'tts', label: 'TTS TTFB', budgetMs: 112, measuredMs: null },
-  { key: 'network', label: 'Network', budgetMs: 58, measuredMs: null },
-];
-
 export default function AnalyticsPage() {
   const scope = useScope();
   const { workspace } = useCurrentScope();
@@ -39,8 +22,17 @@ export default function AnalyticsPage() {
     [workspace?.id, range],
   );
 
-  const stages = state.data?.latencyByStage ?? STAGE_BUDGET_FALLBACK;
-  const totalBudget = stages.reduce((sum, s) => sum + s.budgetMs, 0);
+  // No local copy of the budgets. They are a design target owned by the control
+  // plane (LATENCY_BUDGETS_MS) and were duplicated here, which is two places free to
+  // disagree about what "good" means. Before the fetch resolves there are no stages
+  // to draw — an empty card beats one showing numbers this workspace never produced.
+  const stages = state.data?.latencyByStage ?? [];
+  // Only stages that actually have a target contribute. Null when none do, so the
+  // header shows no budget tag rather than "budget 0 ms".
+  const budgeted = stages.filter((s) => s.budgetMs !== null);
+  const totalBudget = budgeted.length
+    ? budgeted.reduce((sum, s) => sum + (s.budgetMs ?? 0), 0)
+    : null;
 
   return (
     <>
@@ -109,31 +101,41 @@ export default function AnalyticsPage() {
                   <Card
                     size="small"
                     title="Latency by stage"
-                    extra={<Tag bordered={false}>budget {formatMs(totalBudget)}</Tag>}
+                    extra={
+                      totalBudget === null ? null : (
+                        <Tag bordered={false}>budget {formatMs(totalBudget)}</Tag>
+                      )
+                    }
                   >
                     <Flex vertical gap={14}>
                       {stages.map((stage) => {
                         const measured = stage.measuredMs;
+                        const budget = stage.budgetMs;
+                        const overBudget = measured !== null && budget !== null && measured > budget;
                         return (
                           <div key={stage.key}>
                             <Flex justify="space-between" align="baseline" gap={8}>
                               <Typography.Text>{stage.label}</Typography.Text>
                               {measured === null ? (
-                                <Tooltip title="Nothing in the pipeline emits a timing for this stage yet, so there is no measurement to show. The bar is the design budget.">
+                                <Tooltip title="Nothing in the pipeline emits a timing for this stage yet, so there is no measurement to show.">
                                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                    not measured · budget {formatMs(stage.budgetMs)}
+                                    not measured
+                                    {budget === null ? '' : ` · budget ${formatMs(budget)}`}
                                   </Typography.Text>
                                 </Tooltip>
                               ) : (
                                 <Typography.Text className="tabular" type="secondary">
-                                  {formatMs(measured)}{' '}
-                                  <Typography.Text
-                                    type={measured > stage.budgetMs ? 'danger' : 'success'}
-                                    style={{ fontSize: 12 }}
-                                  >
-                                    {measured > stage.budgetMs ? '▲' : '▼'}{' '}
-                                    {formatMs(Math.abs(measured - stage.budgetMs))} vs budget
-                                  </Typography.Text>
+                                  {formatMs(measured)}
+                                  {budget === null ? null : (
+                                    <Typography.Text
+                                      type={overBudget ? 'danger' : 'success'}
+                                      style={{ fontSize: 12 }}
+                                    >
+                                      {' '}
+                                      {overBudget ? '▲' : '▼'}{' '}
+                                      {formatMs(Math.abs(measured - budget))} vs budget
+                                    </Typography.Text>
+                                  )}
                                 </Typography.Text>
                               )}
                             </Flex>
@@ -141,16 +143,26 @@ export default function AnalyticsPage() {
                               // Measured bars are scaled against the stage's own
                               // budget so "over budget" is visible as a full bar,
                               // rather than against a total that hides it.
-                              percent={Math.min(
-                                100,
-                                ((measured ?? stage.budgetMs) / stage.budgetMs) * 100,
-                              )}
+                              // An unmeasured stage draws EMPTY. Substituting the
+                              // budget for the missing measurement made every bar
+                              // render 100% full — "at the limit" — on a workspace
+                              // that had never placed a call. The label said "not
+                              // measured" while the bar said the opposite.
+                              // Empty unless there is BOTH a measurement and a target
+                              // to scale it against. Filling the bar from a budget the
+                              // deployment never set would put an opinion on screen
+                              // that nobody expressed.
+                              percent={
+                                measured === null || budget === null
+                                  ? 0
+                                  : Math.min(100, (measured / budget) * 100)
+                              }
                               showInfo={false}
                               size="small"
                               status={
-                                measured === null
+                                measured === null || budget === null
                                   ? 'normal'
-                                  : measured > stage.budgetMs
+                                  : overBudget
                                     ? 'exception'
                                     : 'success'
                               }
