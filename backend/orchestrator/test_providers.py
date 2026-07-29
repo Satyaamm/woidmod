@@ -77,7 +77,10 @@ SECRETS = {
     "gemini.apiKey": "test",
     "groq.apiKey": "test",
     "azure.openai.apiKey": "test",
-    "bedrock.accessKeyId": "AKIAIOSFODNN7EXAMPLE",
+    # AWS's own docs placeholder (AKIA + 16 chars) is indistinguishable from a real
+    # key id to any scanner, including this repo's CI gate. Nothing here asserts on
+    # the format, so the fixture does not need to imitate one.
+    "bedrock.accessKeyId": "test-access-key-id",
     "bedrock.secretAccessKey": "test",
     "vertex.serviceAccount": FAKE_SA,
     "elevenlabs.apiKey": "test",
