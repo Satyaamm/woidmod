@@ -244,11 +244,6 @@ country**.
 encrypted per tenant, and added in the dashboard under **Providers** — there is no
 platform key pool. A call needs one of each:
 
-| Stage | Cheapest way to get going |
-|---|---|
-| Speech-to-text | Deepgram or AssemblyAI (both give free credit) |
-| Language model | Groq or Google AI Studio (both have a free tier) |
-| Text-to-speech | Cartesia, or OpenAI if you already have a key |
 
 Hit **Test connection** in the credential form — it calls the vendor and names the
 field that's wrong before anything is saved. Then pick the providers on your agent's
@@ -277,33 +272,6 @@ docker-compose.yml Postgres · Redis · MinIO · LiveKit
 .env               single config file for all three services
 ```
 
-## Status
-
-Honest version, because a README that overstates is the most expensive kind.
-
-**Works end to end.** Tenancy, auth (verification, MFA, SSO, invitations), RBAC and
-custom roles, BYOK credentials for 21 providers — every one runnable by the worker and
-verifiable against the vendor from the dashboard — agents with versioning/publish/
-rollback, the visual flow builder compiling to a spec the worker actually executes,
-knowledge, tools, webhooks, evals, telephony and campaigns, the compliance controls
-above, and the voice + video pipelines (vision, avatar, escalate, multi-party
-addressing). Config and telephony persist to Postgres and survive a restart.
-
-**Needs your keys.** A real **audible** call needs your own STT + LLM + TTS keys. A
-live **video** call additionally needs a vision-capable model key.
-
-**Known gaps, surfaced in the UI rather than hidden:**
-
-| Gap | What the product does about it |
-|---|---|
-| **PlayHT** can't run calls — LiveKit stopped publishing `livekit-plugins-playai` at 1.2.x, the worker runs 1.6.6 | Catalog marks it not-runnable, the pipeline dropdown disables it, readiness refuses to call the agent ready |
-| **Voice preview** — synthesis needs somewhere to host the clip | Button disabled with the reason; use Test call to hear a voice |
-| **Billing** — no payment provider connected | Plan switching, cards and invoice PDFs are disabled with the reason; usage and cost are real |
-| **Integration connectors** (CRM/helpdesk) not built | Cards disabled; webhooks and HTTP tools cover the same ground |
-| **Avatar photoreal tier** — vendor plugs in behind a built interface | The interface exists; no vendor wired |
-| **Notifications** — no store or endpoint | Bell disabled rather than showing a fake unread badge |
-
-Expect things to move.
 
 ## Contributing
 
