@@ -125,6 +125,7 @@ export function TranscriptTab({ trace, viewer }: { trace: CallTrace; viewer: Tra
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             style={{ width: 220 }}
+            autoComplete="off"
           />
           <Segmented
             size="small"

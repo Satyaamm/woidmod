@@ -29,6 +29,7 @@ import { TableSkeleton } from '@/components/common/Skeletons';
 import { useAsync } from '@/hooks/useAsync';
 import { usePaginated } from '@/hooks/usePaginated';
 import { agentApi, campaignApi } from '@/lib/api';
+import { CampaignCompliancePreview } from './CampaignCompliancePreview';
 import type { Campaign, CampaignStats, CallingWindow, Lead, LeadOutcome, LeadState } from '@/lib/contract';
 import { formatNumber, formatRelative } from '@/lib/format';
 import { useScope, wsPath } from '@/lib/scope';
@@ -122,6 +123,12 @@ function OverviewTab({
             <Typography.Text type="secondary">No progress yet.</Typography.Text>
           )}
         </Card>
+
+        {/* Directly under Progress: the question "what will happen when I start"
+            belongs next to "what has happened", not on another screen. */}
+        <div style={{ marginTop: 12 }}>
+          <CampaignCompliancePreview campaignId={campaign.id} workspaceId={workspaceId} />
+        </div>
       </Col>
 
       <Col xs={24} xl={10}>

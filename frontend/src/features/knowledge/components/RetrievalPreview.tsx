@@ -105,6 +105,7 @@ export function RetrievalPreview({
           placeholder="Ask what a caller would ask"
           onChange={(e) => setQuery(e.target.value)}
           onSearch={run}
+          autoComplete="off"
         />
 
         {!result && (

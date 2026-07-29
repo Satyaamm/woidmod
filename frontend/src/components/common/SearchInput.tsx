@@ -54,6 +54,9 @@ export function SearchInput({
       allowClear={allowClear}
       prefix={<SearchOutlined />}
       placeholder={placeholder}
+      // A filter box is not personal data — an autofill dropdown over it only ever
+      // covers the results the user is typing to see.
+      autoComplete="off"
       value={text}
       onChange={(e) => {
         const next = e.target.value;

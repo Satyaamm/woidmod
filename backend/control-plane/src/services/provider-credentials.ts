@@ -29,8 +29,20 @@ import type { EncryptionService, Envelope } from '../compliance/encryption.js';
 import type { AuditLogger } from '../compliance/audit-log.js';
 import type { Logger, SecretResolver } from '../core/patterns/factory.js';
 import { ConflictError, NotFoundError } from '../repositories/types.js';
+import { verifyCredentialLive } from '../providers/verify.js';
 
 export type ProviderKind = 'stt' | 'llm' | 'tts';
+
+/** What a verify/test call reports back. */
+export interface VerifyReport {
+  /** The credential's stored status after the check (`test` reports a would-be status). */
+  status: string;
+  /** `live` = the vendor answered. `structural` = it did not, and only fields were checked. */
+  checked: 'structural' | 'live';
+  message: string;
+  /** The vendor's own HTTP status, when there was one. Handy in support threads. */
+  providerStatus?: number;
+}
 
 /**
  * A stored credential. `config` holds non-secret routing (region, resource name,
@@ -47,7 +59,7 @@ export interface ProviderCredential {
   kind: ProviderKind;
   /** Which adapter this configures, e.g. 'azure-openai-llm'. */
   providerKey: string;
-  /** Customer-facing label, e.g. "Acme Azure — West Europe". */
+  /** Customer-facing label, e.g. "Example Corp Azure — West Europe". */
   name: string;
   /** Non-secret routing configuration. Safe to display. */
   config: Record<string, unknown>;
@@ -286,28 +298,32 @@ export class ProviderCredentialService {
   /**
    * Checks a credential is usable and records the result.
    *
-   * Today this is structural: the secrets decrypt, and the required fields for that
-   * provider are present. That already catches the two most common failures — a
-   * crypto-shredded key and a half-filled form.
+   * Two stages, in order, because they fail for different reasons and the customer
+   * needs to be told which:
    *
-   * TODO(phase-2): perform a real provider handshake (a 1-token completion, a voice
-   * list fetch) once the factory registry can build a single provider from one
-   * credential. Structural-only is stated in the response so the UI cannot imply a
-   * live check happened.
+   *   1. **Structural** — every secret decrypts and is non-empty. A failure here is
+   *      ours (a crypto-shredded tenant key) or a half-filled form, and there is no
+   *      point asking the vendor about it.
+   *   2. **Live** — an actual authenticated call to the vendor (`providers/verify.ts`).
+   *      This is what catches the failures that otherwise surface mid-call: a
+   *      revoked key, a typo'd Azure deployment, a PlayHT key paired with the wrong
+   *      user id, a Speechmatics key from the other data centre.
+   *
+   * The response says which stage ran, so the UI never claims a live check happened
+   * when the vendor was simply unreachable.
    */
-  async verify(
-    scope: WorkspaceScope,
-    id: string,
-  ): Promise<{ status: string; checked: 'structural' | 'live'; message: string }> {
+  async verify(scope: WorkspaceScope, id: string): Promise<VerifyReport> {
     require_(scope, 'provider:manage');
     const row = await this.repo.get(scope, id);
     if (!row) throw new NotFoundError('provider credential', id);
 
-    const missing: string[] = [];
+    const secrets: Record<string, string> = {};
+    const empty: string[] = [];
     for (const [field, envelope] of Object.entries(row.secrets)) {
       try {
         const value = await this.encryption.decryptToString(envelope);
-        if (!value.trim()) missing.push(field);
+        if (!value.trim()) empty.push(field);
+        secrets[field] = value;
       } catch {
         // Almost always a destroyed tenant key (GDPR erasure crypto-shredding).
         const result = await this.markVerified(scope, id, {
@@ -322,18 +338,86 @@ export class ProviderCredentialService {
       }
     }
 
-    const ok = missing.length === 0;
-    const result = await this.markVerified(scope, id, {
-      ok,
-      message: ok
-        ? 'secrets decrypt and all required fields are present'
-        : `empty secret field(s): ${missing.join(', ')}`,
+    if (empty.length) {
+      const result = await this.markVerified(scope, id, {
+        ok: false,
+        message: `empty secret field(s): ${empty.join(', ')}`,
+      });
+      return {
+        status: result.status,
+        checked: 'structural',
+        message: result.statusMessage ?? '',
+      };
+    }
+
+    const live = await verifyCredentialLive({
+      providerKey: row.providerKey,
+      config: row.config,
+      secrets,
+    });
+
+    // A vendor we could not reach — or one with no probe yet — must NOT change
+    // the stored status. `resolverFor` skips anything marked invalid, so a
+    // transient network failure here would quietly drop a working key out of the
+    // next call's pipeline; and stamping `valid` on an unprobed provider would
+    // put a green tick on a key nobody checked. Report what happened instead.
+    if (live.checked === 'structural') {
+      return { status: row.status, checked: live.checked, message: live.message };
+    }
+
+    const result = await this.markVerified(scope, id, { ok: live.ok, message: live.message });
+    await this.audit.record(scope, 'apikey.used', {
+      resourceType: 'provider_credential',
+      resourceId: id,
+      metadata: { providerKey: row.providerKey, verification: live.checked, ok: live.ok },
     });
 
     return {
       status: result.status,
-      checked: 'structural',
+      checked: live.checked,
       message: result.statusMessage ?? '',
+      ...(live.status !== undefined ? { providerStatus: live.status } : {}),
+    };
+  }
+
+  /**
+   * Tests credentials that have NOT been saved — the "Test connection" button in
+   * the add/rotate form.
+   *
+   * The point is to fail before storing: a customer pasting an Azure resource +
+   * deployment + key has four things to get right, and finding out at the first
+   * real call (with a caller on the line) is the wrong time. Nothing is written
+   * and nothing is encrypted, so this is also the path a customer can use to
+   * check a key they are not ready to hand us permanently.
+   *
+   * Secrets arrive in the request body, are used once, and are never persisted —
+   * the audit record carries the provider key and outcome only.
+   */
+  async test(
+    scope: WorkspaceScope,
+    input: { providerKey: string; config: Record<string, unknown>; secrets: Record<string, string> },
+  ): Promise<VerifyReport> {
+    require_(scope, 'provider:manage');
+
+    const live = await verifyCredentialLive({
+      providerKey: input.providerKey,
+      config: input.config,
+      secrets: input.secrets,
+    });
+
+    await this.audit.record(scope, 'apikey.used', {
+      resourceType: 'provider_credential',
+      metadata: { providerKey: input.providerKey, verification: live.checked, ok: live.ok, unsaved: true },
+    });
+
+    return {
+      // `valid` is reserved for a vendor that actually answered. A structural
+      // pass means we never asked — reporting it as valid would put a green tick
+      // on a key nobody has checked, which is worse than no tick at all.
+      status: live.checked === 'structural' ? 'unverified' : live.ok ? 'valid' : 'invalid',
+      checked: live.checked,
+      message: live.message,
+      ...(live.status !== undefined ? { providerStatus: live.status } : {}),
     };
   }
 

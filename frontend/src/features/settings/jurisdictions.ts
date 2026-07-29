@@ -1,13 +1,15 @@
 'use client';
 
 /**
- * Mirror of the jurisdiction table the control plane actually enforces
- * (`backend/control-plane/src/services/compliance.ts` → `JURISDICTIONS`).
+ * OFFLINE FALLBACK for the jurisdiction table, plus the presentation vocabulary
+ * (registry labels, lawful bases, day names, disclosure locales) that has no
+ * server-side equivalent.
  *
- * ⚠️ This is presentation copy only — nothing here gates a call. The backend
- * chain in `buildComplianceChain()` is the enforcement point. The reason it is
- * duplicated is that the table is not exposed over HTTP yet; the moment
- * `GET /v1/compliance/jurisdictions` exists, delete this file and read it.
+ * ⚠️ The rules below are NOT the source of truth and no longer match it by
+ * construction: the control plane serves the enforced ruleset from the database
+ * over `GET /v1/compliance/jurisdictions`, where counsel can amend a calling window
+ * without a deploy. Read it with `useJurisdictions()`; these values are rendered
+ * only when that request fails, and the screen labels them as the build's copy.
  *
  * Copy rule for this whole feature: the reader is an ops manager, not a lawyer.
  * Every string says what the setting DOES TO CALLS.

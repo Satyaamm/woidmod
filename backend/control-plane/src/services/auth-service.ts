@@ -183,7 +183,7 @@ export interface SignupResult {
   /**
    * Domain-based org discovery (docs/11 §5). Non-null when a *verified* org owns
    * this email domain. We still provision so the user is never blocked, and the
-   * UI offers "Join Acme?" with a request-to-join instead of silently splitting
+   * UI offers "Join the existing org?" with a request-to-join instead of silently splitting
    * the account into a duplicate org.
    */
   joinableOrg: { id: string; name: string; slug: string } | null;
@@ -461,7 +461,7 @@ export class AuthService {
     const country = (input.country ?? 'US').toUpperCase();
 
     // Domain discovery runs BEFORE provisioning so the response can offer
-    // "Join Acme?" — but it never blocks, and never auto-joins: a verified
+    // "Join the existing org?" — but it never blocks, and never auto-joins: a verified
     // domain still requires an explicit request-to-join (docs/11 §5, §E).
     const joinable = await findJoinableOrgFor(this.deps.orgs, user.email);
 
@@ -549,7 +549,7 @@ export class AuthService {
 
   /**
    * Org name is inferred, never asked for (docs/11 §4): a corporate domain
-   * becomes "Acme", a free-mail address becomes "<First>'s Organization".
+   * becomes "Example Corp", a free-mail address becomes "<First>'s Organization".
    * `verifiedDomains` stays empty — a domain claim needs DNS TXT proof, and
    * auto-join off an unproven domain is exactly how tenants get merged wrongly.
    */
@@ -874,7 +874,7 @@ export function deriveNames(email: string): { firstName: string; familyName: str
   return { firstName: titleCase(first), familyName: rest ? titleCase(rest) : '' };
 }
 
-/** `acme-corp.com` -> `Acme Corp`. Null for free-mail providers. */
+/** `example-corp.com` -> `Example Corp`. Null for free-mail providers. */
 export function companyNameFromDomain(domain: string): string | null {
   const label = domain.split('.')[0] ?? '';
   if (!label || FREE_MAIL_TITLES.has(label.toLowerCase())) return null;

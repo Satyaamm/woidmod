@@ -100,6 +100,7 @@ export function JsonSchemaEditor({
           disabled={readOnly}
           placeholder="customer_id"
           onChange={(e) => patchRow(row.key, { name: e.target.value })}
+          autoComplete="off"
         />
       ),
     },
@@ -132,6 +133,7 @@ export function JsonSchemaEditor({
           disabled={readOnly}
           placeholder="What this value is, and where it comes from"
           onChange={(e) => patchRow(row.key, { description: e.target.value })}
+          autoComplete="off"
         />
       ),
     },
@@ -146,6 +148,7 @@ export function JsonSchemaEditor({
           disabled={readOnly}
           placeholder="comma, separated"
           onChange={(e) => patchRow(row.key, { enumValues: e.target.value })}
+          autoComplete="off"
         />
       ),
     },

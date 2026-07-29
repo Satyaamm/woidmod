@@ -3,19 +3,17 @@
 /**
  * Voices & lexicon network layer.
  *
- * ⚠️ Read this before wiring anything else up.
+ * The voice catalogue and the pronunciation lexicon are both live now:
+ * `GET /v1/workspaces/:id/voices` builds each of the workspace's own connected
+ * TTS adapters and asks the vendor for its voices, and the lexicon is a plain
+ * get/put. Only `voices/preview` is still absent — real synthesis needs
+ * somewhere to host the clip — and it answers 501 rather than 404.
  *
- * The control plane HAS a working voice catalogue (`TtsProvider.listVoices()`),
- * a working TTS stream, and a working pronunciation lexicon
- * (`i18n/normalization/lexicon.ts`) — none of which are exposed over HTTP. There
- * is no route under `/v1` that reaches any of them.
- *
- * Rather than fake it, every call below probes the route it *should* live at and
- * resolves to `null` when the endpoint isn't there. The UI degrades to what it
- * can honestly do offline: the language coverage table, and a client-side
- * before/after preview computed with the same substitution rules the call path
- * uses. See the report in `REPORT` at the bottom of this file for the exact
- * routes needed.
+ * The `probe` wrapper stays for exactly that reason: a missing or unimplemented
+ * route resolves to `null` so the UI can say "not built" instead of showing an
+ * error, while a genuine failure (401, 500, a network outage) still throws and
+ * still surfaces. Never let this collapse into "no data" — that is how a broken
+ * page ends up looking like an empty one.
  */
 
 import { ApiError, http } from '@/lib/api';
@@ -41,19 +39,35 @@ export interface CatalogVoice {
   gender?: string;
   /** Provider key this voice belongs to. */
   providerKey?: string;
+  /** Human-readable vendor name from the catalog, e.g. "ElevenLabs". */
+  providerLabel?: string;
   /** Sample URL, when the provider publishes one. */
   preview?: string;
 }
 
+/** What `GET /workspaces/:id/voices` returns — voices plus why any are missing. */
+export interface VoiceCatalogue {
+  items: CatalogVoice[];
+  /** Connected providers that failed to answer, with the vendor's reason. */
+  problems: Array<{ providerKey: string; label: string; reason: string }>;
+  /** TTS providers this workspace has connected at all. Zero is the empty state. */
+  connectedProviders: number;
+}
+
 export const voicesApi = {
-  /** `GET /v1/workspaces/:id/voices` — not implemented yet. */
-  list: (workspaceId: string, language?: string): Promise<CatalogVoice[] | null> =>
+  /**
+   * `GET /v1/workspaces/:id/voices` — the workspace's OWN voices.
+   *
+   * Built from its connected TTS credentials, so two workspaces see different
+   * lists, and a workspace with no keys sees none rather than a generic table.
+   */
+  list: (workspaceId: string, language?: string): Promise<VoiceCatalogue | null> =>
     probe(async () => {
-      const res = await http.get<{ items: CatalogVoice[] }>(`/workspaces/${workspaceId}/voices`, {
+      const res = await http.get<VoiceCatalogue>(`/workspaces/${workspaceId}/voices`, {
         ...scoped(workspaceId),
         params: language ? { language } : undefined,
       });
-      return res.data.items;
+      return res.data;
     }),
 
   /**
@@ -94,13 +108,9 @@ export const voicesApi = {
 };
 
 /**
- * Routes this screen needs. Kept in code so it shows up in a grep rather than
- * only in a hand-off document.
+ * The one route this screen still needs. Kept in code so it shows up in a grep
+ * rather than only in a hand-off document.
  */
 export const REQUIRED_ENDPOINTS = [
-  'GET  /v1/workspaces/:id/voices?language=  → { items: CatalogVoice[] }  (wraps TtsProvider.listVoices)',
-  'POST /v1/workspaces/:id/voices/preview    → { audioUrl, provider, mock } (wraps TtsProvider.stream)',
-  'GET  /v1/workspaces/:id/lexicon           → { items: LexiconEntry[] }',
-  'PUT  /v1/workspaces/:id/lexicon           → { items: LexiconEntry[] }',
-  'GET  /v1/platform/locales                 → localeRegistry.options() (tier metadata)',
+  'POST /v1/workspaces/:id/voices/preview    → { audioUrl, provider } (wraps TtsProvider.stream; currently 501 — needs audio hosting)',
 ] as const;

@@ -51,6 +51,7 @@ function WorkspacesInner() {
           defaultValue={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ maxWidth: 280 }}
+          autoComplete="off"
         />
       </Flex>
 

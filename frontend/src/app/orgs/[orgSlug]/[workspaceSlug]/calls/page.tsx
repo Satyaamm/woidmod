@@ -4,7 +4,7 @@ import { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { ArrowDownOutlined, ArrowUpOutlined, ExportOutlined, SearchOutlined, WarningFilled } from '@ant-design/icons';
-import { Button, Card, Flex, Input, Select, Table, Tooltip, Typography } from 'antd';
+import { App, Button, Card, Flex, Input, Select, Table, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { LatencyBadge } from '@/components/common/LatencyBadge';
@@ -14,15 +14,46 @@ import { TableSkeleton } from '@/components/common/Skeletons';
 import { useAsync } from '@/hooks/useAsync';
 import { agentApi, callApi, type CallFilters } from '@/lib/api';
 import type { Call } from '@/lib/contract';
+import { downloadCsv, toCsv } from '@/lib/csv';
 import { formatDuration, formatRelative, formatUsd } from '@/lib/format';
 import { useCurrentScope, useScope, wsPath } from '@/lib/scope';
 
 const PAGE_SIZE = 50;
 
+/**
+ * Export columns.
+ *
+ * Raw values, not the formatted ones the table shows: an exported CSV is opened
+ * in a spreadsheet and pivoted, and "3 minutes ago" or "$0.014" are strings that
+ * cannot be summed or sorted. Timestamps stay ISO-8601 for the same reason.
+ */
+const EXPORT_COLUMNS = [
+  { header: 'Call ID', value: (c: Call) => c.id },
+  { header: 'Started at', value: (c: Call) => c.startedAt },
+  { header: 'Ended at', value: (c: Call) => c.endedAt ?? '' },
+  { header: 'Agent', value: (c: Call) => c.agentName },
+  { header: 'Agent version', value: (c: Call) => c.agentVersion },
+  { header: 'Mode', value: (c: Call) => c.mode },
+  { header: 'Direction', value: (c: Call) => c.direction },
+  { header: 'Status', value: (c: Call) => c.status },
+  { header: 'Outcome', value: (c: Call) => c.outcome },
+  { header: 'From', value: (c: Call) => c.fromNumber },
+  { header: 'To', value: (c: Call) => c.toNumber },
+  { header: 'Duration (s)', value: (c: Call) => c.durationSec },
+  { header: 'Turns', value: (c: Call) => c.turnCount },
+  { header: 'Barge-ins', value: (c: Call) => c.bargeInCount },
+  { header: 'Median latency (ms)', value: (c: Call) => c.medianLatencyMs },
+  { header: 'p95 latency (ms)', value: (c: Call) => c.p95LatencyMs },
+  { header: 'Cost (USD)', value: (c: Call) => c.costUsd },
+  { header: 'Compliance flags', value: (c: Call) => (c.complianceFlags ?? []).join(' ') },
+];
+
 function CallsInner() {
   const scope = useScope();
   const { workspace } = useCurrentScope();
+  const { message } = App.useApp();
   const params = useSearchParams();
+  const [exporting, setExporting] = useState(false);
 
   /* Filters are seeded from the query string so "every number is a link"
      (docs/07 §2) — a stat tile can deep-link straight into the failing subset. */
@@ -47,6 +78,44 @@ function CallsInner() {
     () => (workspace ? agentApi.list(workspace.id) : Promise.resolve([])),
     [workspace?.id],
   );
+
+  /**
+   * Exports what the filters currently select — not the visible page.
+   *
+   * Someone who filtered to "abandoned calls over 800ms" and hit Export wants
+   * that set, and getting only the 50 rows on screen is the kind of silent
+   * truncation that ends up in a report. The page size is raised for one request
+   * and capped at the API's own limit; if the selection is larger than that, the
+   * message says how many rows were taken rather than pretending it was all.
+   */
+  const EXPORT_LIMIT = 200;
+  const exportCsv = async () => {
+    if (!workspace) return;
+    setExporting(true);
+    try {
+      const page = await callApi.list(workspace.id, {
+        ...filters,
+        search: search || undefined,
+        page: 1,
+        pageSize: EXPORT_LIMIT,
+      });
+      if (page.items.length === 0) {
+        message.info('Nothing to export — no calls match these filters.');
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadCsv(`calls-${workspace.slug ?? workspace.id}-${stamp}`, toCsv(page.items, EXPORT_COLUMNS));
+      message.success(
+        page.total > page.items.length
+          ? `Exported the first ${page.items.length} of ${page.total} matching calls.`
+          : `Exported ${page.items.length} calls.`,
+      );
+    } catch (err) {
+      message.error((err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const columns: ColumnsType<Call> = useMemo(
     () => [
@@ -142,7 +211,13 @@ function CallsInner() {
       <PageHeader
         title="Calls"
         subtitle="Every call, filterable down to the ones that went wrong."
-        actions={<Button icon={<ExportOutlined />}>Export CSV</Button>}
+        actions={
+          <Tooltip title="Downloads the calls these filters select, not just this page.">
+            <Button icon={<ExportOutlined />} loading={exporting} onClick={exportCsv}>
+              Export CSV
+            </Button>
+          </Tooltip>
+        }
       />
 
       <Card size="small" styles={{ body: { padding: 0 } }}>
@@ -154,6 +229,7 @@ function CallsInner() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ width: 220 }}
+            autoComplete="off"
           />
           <Select
             allowClear

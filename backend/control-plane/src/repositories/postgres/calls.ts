@@ -51,6 +51,7 @@ export class PostgresCallRepository implements CallRepository {
       ];
       if (opts.agentId) clauses.push(eq(callRecords.agentId, opts.agentId));
       if (opts.status) clauses.push(eq(callRecords.status, opts.status));
+      if (opts.mode) clauses.push(eq(callRecords.mode, opts.mode));
       // outcome / p95 live in the envelope — filter via jsonb accessors so pagination
       // stays correct (filtering after the page would give wrong totals).
       if (opts.outcome) clauses.push(sql`${callRecords.data}->>'outcome' = ${opts.outcome}`);

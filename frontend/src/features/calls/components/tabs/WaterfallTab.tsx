@@ -125,6 +125,7 @@ export function WaterfallTab({ trace, viewer }: { trace: CallTrace; viewer: Trac
           onChange={(v) => viewer.setOutlierThresholdMs(v ?? 600)}
           style={{ width: 88 }}
           suffix="ms"
+          autoComplete="off"
         />
         <Tooltip title="Previous outlier">
           <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => viewer.jumpOutlier(-1)} />

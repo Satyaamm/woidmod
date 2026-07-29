@@ -53,6 +53,12 @@ async function main() {
     container.logger.info('storage', { mode: 'in-memory', note: 'data resets on restart' });
   }
 
+  // Load the jurisdiction ruleset before serving, so the first outbound call is
+  // decided by the stored rules rather than by the compiled-in fallback. A failure
+  // here logs and falls back; it never blocks startup, because a control plane that
+  // will not boot is worse than one running on the built-in ruleset.
+  await container.services.jurisdictions.refresh(true);
+
   const factoryContext: FactoryContext = {
     secrets: envSecrets,
     region: config.REGION,
@@ -88,13 +94,32 @@ async function main() {
     }),
   });
 
-  serve({ fetch: app.fetch, port: config.PORT }, (info) => {
+  const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
     container.logger.info('control-plane listening', {
       port: info.port,
       region: config.REGION,
-      hint: `curl -X POST localhost:${info.port}/auth/signup -H 'content-type: application/json' -d '{"email":"you@acme.com","password":"correct-horse-battery"}'`,
+      hint: `curl -X POST localhost:${info.port}/auth/signup -H 'content-type: application/json' -d '{"email":"you@example.com","password":"correct-horse-battery"}'`,
     });
   });
+
+  /**
+   * Release the port on SIGINT/SIGTERM.
+   *
+   * `registerShutdown` drains the Postgres pool but nothing closed the listener, so
+   * the process outlived its own shutdown signal still holding `:PORT`. Under
+   * `tsx watch` that is silent and expensive: the reload spawns a replacement, the
+   * replacement dies with EADDRINUSE, and the stale process keeps answering — you
+   * edit a file, see no error, and test code that is no longer what you wrote.
+   *
+   * The timer is the backstop for keep-alive sockets, which `close()` waits on;
+   * `unref()` keeps it from holding the process open on its own.
+   */
+  const closeHttp = () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3_000).unref();
+  };
+  process.once('SIGINT', closeHttp);
+  process.once('SIGTERM', closeHttp);
 }
 
 main().catch((err) => {

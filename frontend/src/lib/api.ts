@@ -7,6 +7,8 @@
 import axios, { type AxiosInstance } from 'axios';
 import type {
   Agent,
+  AgentVersion,
+  CreateAgentInput,
   ApiKey,
   AuditEntry,
   Call,
@@ -39,6 +41,8 @@ import type {
   ProviderKind,
   ProviderCredentialView,
   ProviderCatalogItem,
+  ProviderVerifyResult,
+  TestCredentialInput,
   CreateCredentialInput,
   User,
   UpdateProfileInput,
@@ -288,7 +292,7 @@ export const authApi = {
     return authPost('/auth/verify-email', input);
   },
 
-  resendCode: (email: string): Promise<void> => authPost('/auth/resend-code', { email }),
+  resendCode: (email: string): Promise<void> => authPost('/auth/verify-email/resend', { email }),
 
   requestPasswordReset: (email: string): Promise<void> => authPost('/auth/forgot-password', { email }),
 
@@ -347,12 +351,30 @@ export const workspaceApi = {
   byId: (id: string): Promise<Workspace> => get(`/workspaces/${id}`),
   create: (body: Partial<Workspace>): Promise<Workspace> => post('/workspaces', body),
   update: (id: string, body: Partial<Workspace>): Promise<Workspace> => patch(`/workspaces/${id}`, body),
-  apiKeys: (workspaceId: string): Promise<ApiKey[]> => get(`/workspaces/${workspaceId}/keys`),
+  /**
+   * API keys live at `/api-keys`, NOT `/workspaces/:id/keys`.
+   *
+   * Scope travels in the `x-workspace-id` header like every other tenant-scoped
+   * call (see `apiScope`), and `requireWorkspace` 400s without it — so there is
+   * no path to an org-wide key. The `workspaceId` argument stays because callers
+   * pass it as a `useAsync` dependency and to pin the header for one request.
+   *
+   * These three previously pointed at a path the control plane has never served,
+   * so every request 404'd and the API-keys page could not list, create or
+   * revoke anything.
+   */
+  apiKeys: async (workspaceId: string): Promise<ApiKey[]> => {
+    const res = await get<{ items: ApiKey[] }>('/api-keys', undefined, workspaceId);
+    return res.items;
+  },
   /** The full secret comes back exactly once, here (docs/11 §9). */
-  createApiKey: (workspaceId: string, body: { name: string; mode: Mode }): Promise<ApiKey> =>
-    post(`/workspaces/${workspaceId}/keys`, body),
+  createApiKey: (
+    workspaceId: string,
+    body: { name: string; mode: Mode },
+  ): Promise<{ apiKey: ApiKey; secret: string; warning: string }> =>
+    postScoped('/api-keys', body, workspaceId),
   revokeApiKey: (workspaceId: string, keyId: string): Promise<void> =>
-    del(`/workspaces/${workspaceId}/keys/${keyId}`),
+    delScoped(`/api-keys/${keyId}`, workspaceId),
 };
 
 // ===========================================================================
@@ -369,10 +391,30 @@ export const agentApi = {
     return Array.isArray(page) ? page : page.items;
   },
   byId: (agentId: string): Promise<Agent> => get(`/agents/${agentId}`),
-  create: (workspaceId: string, body: Partial<Agent>): Promise<Agent> =>
-    post(`/workspaces/${workspaceId}/agents`, body),
+  /**
+   * `POST /agents`, not `/workspaces/:id/agents` — the latter was never a route,
+   * so agent creation 404'd. Workspace comes from the header like everywhere else.
+   */
+  create: (workspaceId: string, body: CreateAgentInput): Promise<Agent> =>
+    postScoped('/agents', body, workspaceId),
   update: (agentId: string, body: Partial<Agent>): Promise<Agent> => patch(`/agents/${agentId}`, body),
-  publish: (agentId: string, changeNote?: string): Promise<Agent> =>
+  remove: (agentId: string): Promise<void> => del(`/agents/${agentId}`),
+  versions: async (agentId: string): Promise<AgentVersion[]> => {
+    const res = await get<{ items: AgentVersion[] }>(`/agents/${agentId}/versions`);
+    return res.items;
+  },
+  rollback: (agentId: string, version: number): Promise<Agent> =>
+    post(`/agents/${agentId}/rollback/${version}`),
+  /**
+   * Returns `{ agent, version }` — the updated agent AND the immutable version
+   * record it just created, not a bare Agent. Typing this as `Agent` meant
+   * `result.version` was the record object rather than a number, so anything
+   * rendering it printed `[object Object]`.
+   */
+  publish: (
+    agentId: string,
+    changeNote?: string,
+  ): Promise<{ agent: Agent; version: AgentVersion }> =>
     post(`/agents/${agentId}/publish`, { changeNote }),
   /** Validate a flow graph without saving — the builder calls this for live node badges. */
   validateFlow: (agentId: string, flow?: FlowSpec): Promise<FlowValidation> =>
@@ -384,8 +426,14 @@ export const agentApi = {
 export interface AgentReadinessCheck {
   capability: string;
   providerKey: string;
+  /** Human-readable vendor name from the catalog, e.g. "Azure OpenAI". */
+  label: string;
   connected: boolean;
   status: 'missing' | 'unverified' | 'valid' | 'invalid' | 'expired';
+  /** False = a key is stored but the call worker has no plugin to run it. */
+  runnable: boolean;
+  /** Where to get a key, for the "missing" path. */
+  keyUrl?: string;
 }
 
 export interface AgentReadiness {
@@ -459,6 +507,25 @@ export interface CampaignListFilters {
   search?: string;
 }
 
+export interface CampaignCompliancePreview {
+  campaignId: string;
+  evaluatedAt: string;
+  leadsEvaluated: number;
+  /** True when the list is longer than the preview looked at — never a silent cap. */
+  truncated: boolean;
+  totalLeads: number;
+  dialable: number;
+  blocked: number;
+  countries: Array<{
+    country: string;
+    leads: number;
+    dialable: number;
+    /** Rule key → how many leads it stopped. */
+    blocked: Record<string, number>;
+  }>;
+  notes: string[];
+}
+
 export const campaignApi = {
   list: (workspaceId: string, filters: CampaignListFilters = {}): Promise<Paginated<Campaign>> =>
     get('/campaigns', { ...filters }, workspaceId),
@@ -478,6 +545,12 @@ export const campaignApi = {
     postScoped(`/campaigns/${id}/stop`, undefined, workspaceId),
   progress: (id: string, workspaceId?: string): Promise<CampaignStats> =>
     get(`/campaigns/${id}/progress`, undefined, workspaceId),
+  /**
+   * What the compliance gate would do to this lead list — before pressing start,
+   * rather than after 4,000 blocked dispatch rows explain it.
+   */
+  compliancePreview: (id: string, workspaceId?: string, at?: string): Promise<CampaignCompliancePreview> =>
+    get(`/campaigns/${id}/compliance-preview`, at ? { at } : undefined, workspaceId),
   leads: (id: string, workspaceId?: string, page = 1, pageSize = 50): Promise<Paginated<Lead>> =>
     get(`/campaigns/${id}/leads`, { page, pageSize }, workspaceId),
   addLeads: (
@@ -500,7 +573,6 @@ export const overviewApi = {
 // in the URL is for humans and bookmarks; the token is what authorises.
 //
 // Functions marked FIXTURE have no endpoint yet. Each one is a single `return`
-// away from being real — see `lib/fixtures/org-fixtures.ts`.
 // ===========================================================================
 
 /** `GET /v1/org` returns the org plus a jurisdiction-derived tax-ID label. */
@@ -677,12 +749,15 @@ export const providerApi = {
     workspaceId?: string,
   ): Promise<ProviderCredentialView> =>
     postScoped(`/provider-credentials/${id}/rotate`, { secrets }, workspaceId),
-  /** LIVE — POST /v1/provider-credentials/:id/verify. */
-  verify: (
-    id: string,
-    workspaceId?: string,
-  ): Promise<{ status: string; checked: string; message: string }> =>
+  /** LIVE — POST /v1/provider-credentials/:id/verify. Real call to the vendor. */
+  verify: (id: string, workspaceId?: string): Promise<ProviderVerifyResult> =>
     postScoped(`/provider-credentials/${id}/verify`, undefined, workspaceId),
+  /**
+   * LIVE — POST /v1/provider-credentials/test. Probes credentials that have NOT
+   * been saved, so the add/rotate form can fail before storing anything.
+   */
+  test: (body: TestCredentialInput, workspaceId?: string): Promise<ProviderVerifyResult> =>
+    postScoped('/provider-credentials/test', body, workspaceId),
   /** LIVE — DELETE /v1/provider-credentials/:id. */
   remove: (id: string, workspaceId?: string): Promise<void> =>
     delScoped(`/provider-credentials/${id}`, workspaceId),
@@ -713,9 +788,6 @@ import type {
   WebhookEndpoint,
   WorkspaceTool,
 } from '@/lib/contract';
-
-/** True while this module serves fixtures. Screens read it to decide whether to warn. */
-export const USING_FIXTURES = false;
 
 export const knowledgeApi = {
   /** GET /workspaces/:id/knowledge */

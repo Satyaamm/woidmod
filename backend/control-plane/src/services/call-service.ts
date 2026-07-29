@@ -101,7 +101,12 @@ export class CallService {
     // Call rows hold no transcript text, so there is nothing to mask here. Phone
     // numbers stay visible: without them the call log cannot be reconciled with a
     // customer's own records, which is the whole point of the screen.
-    return this.calls.list(scope, opts);
+    //
+    // Mode defaults to the request's own (`x-mode`), so test rehearsals and calls
+    // that reached real customers never share a list. Defaulted here rather than in
+    // the routes because every caller wants it — and the one that does not
+    // (the live spend-cap sum) has to say `mode: 'live'` out loud.
+    return this.calls.list(scope, { ...opts, mode: opts?.mode ?? scope.mode });
   }
 
   async get(scope: WorkspaceScope, callId: string): Promise<Call> {

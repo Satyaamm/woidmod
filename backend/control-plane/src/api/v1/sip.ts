@@ -38,6 +38,33 @@ export function sipRoutes(container: Container) {
 
     const { agentId, toNumber } = outboundInput.parse(await c.req.json());
     const agent = await container.services.agents.get(scope, agentId);
+
+    // Permission says this user MAY place live calls. Compliance says whether THIS
+    // number, in THIS country, at THIS local hour may be called — decided by the
+    // callee's jurisdiction and recorded either way.
+    const workspace = await container.services.workspaces.get(scope, scope.workspaceId);
+    const decision = await container.services.outboundGuard.check(scope, workspace.compliance, {
+      toNumber,
+      decidedBy: scope.userId,
+      trunkId: config.SIP_OUTBOUND_TRUNK_ID,
+      agentId: agent.id,
+    });
+
+    if (!decision.allowed) {
+      return c.json(
+        {
+          error: 'compliance_blocked',
+          message: decision.reason,
+          country: decision.destination.country || null,
+          countryConfidence: decision.destination.confidence,
+          rulesApplied: decision.rulesApplied,
+          calleeLocalTime: decision.calleeLocalTime,
+          auditId: decision.auditId,
+        },
+        403,
+      );
+    }
+
     const callId = newId('call');
     const room = `call-${callId}`;
     const metadata = JSON.stringify({

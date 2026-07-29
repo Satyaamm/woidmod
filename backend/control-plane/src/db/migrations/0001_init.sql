@@ -85,7 +85,7 @@ CREATE TABLE organizations (
 CREATE UNIQUE INDEX organizations_slug_uq   ON organizations (slug);
 CREATE INDEX        organizations_parent_idx ON organizations (parent_org_id)
   WHERE parent_org_id IS NOT NULL;
--- Domain-based org discovery: "which org owns @acme.com" (docs/11 §5).
+-- Domain-based org discovery: "which org owns @example.com" (docs/11 §5).
 CREATE INDEX organizations_verified_domains_gin ON organizations USING gin (verified_domains);
 
 -- ---------------------------------------------------------------------------

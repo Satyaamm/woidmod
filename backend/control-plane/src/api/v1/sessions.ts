@@ -35,7 +35,10 @@ export function sessionVoiceRoutes(container: Container) {
       const workspace = await container.services.workspaces.get(scope, scope.workspaceId);
       const caps = workspace.spendCaps;
       if (caps.dailyUsd || caps.monthlyUsd) {
-        const page = await container.services.calls.list(scope, { pageSize: 500 });
+        // Explicitly live: a live call can be placed from a test-mode session, and
+        // summing that session's ambient (test, cost-free) calls would let spend run
+        // straight past the cap.
+        const page = await container.services.calls.list(scope, { pageSize: 500, mode: 'live' });
         const now = new Date();
         const startDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
         const startMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();

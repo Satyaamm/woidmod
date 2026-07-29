@@ -197,6 +197,27 @@ export class PostgresLeadRepository implements LeadRepository {
     });
   }
 
+  async isSuppressed(scope: WorkspaceScope, e164: string): Promise<boolean> {
+    return this.handle.withTenant(scope.orgId, async (db) => {
+      // Workspace-wide, not per campaign — see the interface note. `onDncList` lives
+      // in the envelope rather than a column, so it is read from jsonb; the `e164`
+      // predicate is the selective one and it is a real column.
+      const rows = await db
+        .select({ id: leads.id })
+        .from(leads)
+        .where(
+          and(
+            eq(leads.orgId, scope.orgId),
+            eq(leads.workspaceId, scope.workspaceId),
+            eq(leads.e164, e164),
+            sql`${leads.data}->>'onDncList' = 'true'`,
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    });
+  }
+
   /** Build the insert row: scalar projection + full envelope, tenancy from the scope. */
   private toRow(scope: WorkspaceScope, lead: Lead): typeof leads.$inferInsert {
     const entity: Lead = { ...lead, orgId: scope.orgId, workspaceId: scope.workspaceId };

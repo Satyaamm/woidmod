@@ -202,12 +202,12 @@ export function CompanyStep({ country }: { country: string }) {
             label="Legal name"
             extra="What the invoice says."
           >
-            <Input size="large" placeholder="Registered legal entity name" />
+            <Input size="large" placeholder="Registered legal entity name" autoComplete="off" />
           </Form.Item>
         </Col>
         <Col xs={24} sm={12}>
           <Form.Item name={['organization', 'website']} label="Website">
-            <Input size="large" placeholder="https://example.com" />
+            <Input size="large" placeholder="https://example.com" autoComplete="off" />
           </Form.Item>
         </Col>
         <Col xs={24} sm={12}>
@@ -236,7 +236,7 @@ export function CompanyStep({ country }: { country: string }) {
       <Row gutter={12}>
         <Col xs={24} sm={12}>
           <Form.Item name={['organization', 'taxId']} label={taxIdLabel(country)}>
-            <Input size="large" />
+            <Input size="large" autoComplete="off" />
           </Form.Item>
         </Col>
         <Col xs={24} sm={12}>
@@ -246,7 +246,7 @@ export function CompanyStep({ country }: { country: string }) {
             rules={[{ type: 'email', message: 'That email looks wrong' }]}
             extra="Leave blank to use your work email."
           >
-            <Input size="large" />
+            <Input size="large" autoComplete="off" />
           </Form.Item>
         </Col>
       </Row>

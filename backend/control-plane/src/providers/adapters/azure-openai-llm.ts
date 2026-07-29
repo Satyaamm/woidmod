@@ -91,7 +91,7 @@ const REASONING_MODEL_RE = /^(o\d|gpt-5)/i;
 
 export interface AzureOpenAiLlmOptions {
   apiKey: string;
-  /** Fully-qualified resource endpoint, e.g. https://acme-eu.openai.azure.com */
+  /** Fully-qualified resource endpoint, e.g. https://your-resource.openai.azure.com */
   baseUrl: string;
   /** Customer's deployment label — this is what the URL routes on. */
   deploymentName: string;

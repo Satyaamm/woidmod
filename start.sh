@@ -170,9 +170,6 @@ echo
 bold "  Dashboard   http://localhost:3100"
 bold "  API         http://localhost:3101"
 echo
-echo "  Demo login:  ava.mueller@contoso.example  /  dev-password-not-for-production"
-echo "               john.rivera@globex.example   /  dev-password-not-for-production"
-echo
 echo "  One service only:  tail -f logs/frontend.log"
 echo "  Stop everything:   Ctrl+C  (then ./start.sh --down to stop docker too)"
 echo

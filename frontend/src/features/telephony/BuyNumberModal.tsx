@@ -158,12 +158,14 @@ export function BuyNumberModal({
           value={areaCode}
           onChange={(e) => setAreaCode(e.target.value)}
           style={{ width: 130 }}
+          autoComplete="off"
         />
         <Input
           placeholder="Contains digits"
           value={contains}
           onChange={(e) => setContains(e.target.value)}
           style={{ width: 150 }}
+          autoComplete="off"
         />
         <Button type="primary" icon={<SearchOutlined />} loading={searching} onClick={search}>
           Search

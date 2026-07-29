@@ -36,8 +36,11 @@ import {
   suggestedRegistries,
   twoPartyJurisdictions,
 } from '@/features/settings/jurisdictions';
+import { useJurisdictions } from '@/features/settings/useJurisdictions';
 import { CallingWindowsEditor } from './CallingWindowsEditor';
 import { DisclosureEditor } from './DisclosureEditor';
+import { JurisdictionMatrix } from './JurisdictionMatrix';
+import { PreflightSimulator } from './PreflightSimulator';
 import { SettingsSection } from './SettingsSection';
 
 const useStyles = createStyles(({ token, css }) => ({
@@ -83,6 +86,7 @@ const useComplianceSave =
 function JurisdictionsSection({ workspace, canWrite, onSaved }: SectionProps) {
   const { styles } = useStyles();
   const save = useComplianceSave(workspace.id, onSaved);
+  const jurisdictions = useJurisdictions(workspace.id);
   const { draft, patch, reset, dirty } = useDraft({
     jurisdictions: workspace.compliance.jurisdictions,
   });
@@ -165,6 +169,36 @@ function JurisdictionsSection({ workspace, canWrite, onSaved }: SectionProps) {
           </ul>
         </div>
       )}
+
+      {/*
+        The rules themselves, live from the control plane. Shown inside this section
+        because "which countries may I call" and "what does calling them mean" are
+        one question, and answering only the first is how a multi-country campaign
+        gets configured wrongly.
+      */}
+      <div style={{ marginTop: 16 }}>
+        <Typography.Text strong style={{ fontSize: 12 }}>
+          What applies in each country
+        </Typography.Text>
+        <div style={{ marginTop: 8 }}>
+          <JurisdictionMatrix selected={draft.jurisdictions} jurisdictions={jurisdictions} />
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1b. Would this call go through?
+// ---------------------------------------------------------------------------
+
+function PreflightSection({ workspace }: SectionProps) {
+  return (
+    <SettingsSection
+      title="Test a number"
+      description="Check a specific number against the live gate before a campaign discovers the answer for you. Nothing is dialled and nothing is recorded."
+    >
+      <PreflightSimulator workspaceId={workspace.id} />
     </SettingsSection>
   );
 }
@@ -442,6 +476,7 @@ function DncSection({ workspace, canWrite, onSaved }: SectionProps) {
               disabled={!canWrite}
               onChange={(v) => patch({ maxAttemptsPerLead: v ?? 1 })}
               style={{ width: '100%', marginTop: 4 }}
+              autoComplete="off"
             />
             <span className={styles.optionDesc}>
               Counted across the whole workspace, not per campaign. Once a lead hits the cap, every
@@ -521,6 +556,7 @@ function DataSection({ workspace, canWrite, onSaved }: SectionProps) {
               disabled={!canWrite}
               onChange={(v) => patch({ retentionDays: v ?? 1 })}
               style={{ width: '100%', marginTop: 4 }}
+              autoComplete="off"
             />
             <span className={styles.optionDesc}>
               After this many days the recording, transcript and trace are deleted permanently.
@@ -719,6 +755,7 @@ export function ComplianceTab({
     <Row gutter={[12, 0]}>
       <Col xs={24} xl={13}>
         <JurisdictionsSection workspace={workspace} canWrite={canWrite} onSaved={onSaved} />
+        <PreflightSection workspace={workspace} canWrite={canWrite} onSaved={onSaved} />
         <ConsentSection workspace={workspace} canWrite={canWrite} onSaved={onSaved} />
         <WindowsSection workspace={workspace} canWrite={canWrite} onSaved={onSaved} />
       </Col>

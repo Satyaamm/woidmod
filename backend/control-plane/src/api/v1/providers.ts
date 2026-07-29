@@ -19,6 +19,13 @@ import { z } from 'zod';
 
 const rotateInput = z.object({ secrets: z.record(z.string().min(1)) });
 
+/** Unsaved credentials to probe. Same shape as create, minus the naming/scoping. */
+const testCredentialInput = z.object({
+  providerKey: z.string().min(1),
+  config: z.record(z.unknown()).default({}),
+  secrets: z.record(z.string()),
+});
+
 export function providerRoutes(container: Container) {
   const app = new Hono<ApiEnv>();
 
@@ -47,18 +54,32 @@ export function providerRoutes(container: Container) {
   });
 
   /**
-   * Verify a credential actually works.
+   * Verify a stored credential actually works — a real authenticated call to the
+   * vendor, not a field check.
    *
    * Customers need to know a key is live *before* it fails on a real call, and a
-   * rotated key is marked `unverified` until this passes. Currently a structural
-   * check; it becomes a real provider handshake once the adapter registry can build
-   * a provider from a single credential.
+   * rotated key is marked `unverified` until this passes.
    */
   app.post('/provider-credentials/:id/verify', async (c) => {
     const scope = requireWorkspace(c.get('scope'));
     const id = c.req.param('id');
     const result = await container.services.providerCredentials.verify(scope, id);
     return c.json(result);
+  });
+
+  /**
+   * Test credentials that have NOT been saved — the "Test connection" button in
+   * the add/rotate form.
+   *
+   * Deliberately not under `/:id`: there is no id yet. Secrets are used for the
+   * one probe and never written, which is the whole point — a customer finds out
+   * their Azure deployment name is wrong while the form is still open, rather
+   * than on a call.
+   */
+  app.post('/provider-credentials/test', async (c) => {
+    const scope = requireWorkspace(c.get('scope'));
+    const input = testCredentialInput.parse(await c.req.json());
+    return c.json(await container.services.providerCredentials.test(scope, input));
   });
 
   app.delete('/provider-credentials/:id', async (c) => {

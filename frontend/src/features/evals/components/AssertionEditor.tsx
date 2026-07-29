@@ -10,7 +10,7 @@ import type {
   EvalAssertionType,
   ToolParamPredicate,
 } from '@/lib/contract';
-import { describeAssertion } from '@/lib/fixtures';
+import { describeAssertion } from '@/lib/assertions';
 
 const useStyles = createStyles(({ token, css }) => ({
   row: css`
@@ -229,6 +229,7 @@ export function AssertionEditor({
                             params[i] = { ...p, path: e.target.value };
                             patch(a.id, { tool: { name: a.tool!.name, params } });
                           }}
+                          autoComplete="off"
                         />
                         <Select<AssertionOperator>
                           size="small"
@@ -265,6 +266,7 @@ export function AssertionEditor({
                             params[i] = { ...p, value: e.target.value };
                             patch(a.id, { tool: { name: a.tool!.name, params } });
                           }}
+                          autoComplete="off"
                         />
                         <Button
                           size="small"
@@ -312,6 +314,7 @@ export function AssertionEditor({
                   onChange={(e) =>
                     patch(a.id, { text: { ...(a.text ?? { caseSensitive: false, isRegex: false }), value: e.target.value } })
                   }
+                  autoComplete="off"
                 />
                 <Tooltip title="Treat the value as a regular expression">
                   <Switch
@@ -347,6 +350,7 @@ export function AssertionEditor({
                   onChange={(e) =>
                     patch(a.id, { variable: { ...(a.variable ?? { operator: 'equals', value: '' }), name: e.target.value } })
                   }
+                  autoComplete="off"
                 />
                 <Select<AssertionOperator>
                   size="small"
@@ -365,6 +369,7 @@ export function AssertionEditor({
                   onChange={(e) =>
                     patch(a.id, { variable: { ...(a.variable ?? { name: '', operator: 'equals' }), value: e.target.value } })
                   }
+                  autoComplete="off"
                 />
               </Flex>
             )}
@@ -391,6 +396,7 @@ export function AssertionEditor({
                   onChange={(v) => patch(a.id, { maxLatencyMs: v ?? 700 })}
                   addonAfter="ms"
                   style={{ width: 150 }}
+                  autoComplete="off"
                 />
                 <Typography.Text className={styles.label}>p95 end-of-speech to first audio</Typography.Text>
               </Flex>
@@ -432,6 +438,7 @@ export function AssertionEditor({
                     onChange={(e) =>
                       patch(a.id, { register: { ...(a.register ?? { mode: 'constant' }), language: e.target.value } })
                     }
+                    autoComplete="off"
                   />
                   <Tooltip title="Fraction of agent turns that must comply. Below 1.0 tolerates a single slip.">
                     <InputNumber
@@ -446,6 +453,7 @@ export function AssertionEditor({
                           register: { ...(a.register ?? { mode: 'constant' }), minComplianceRate: v ?? 1 },
                         })
                       }
+                      autoComplete="off"
                     />
                   </Tooltip>
                 </Flex>
@@ -468,6 +476,7 @@ export function AssertionEditor({
                       judge: { ...(a.judge ?? { model: 'fast', passThreshold: 0.75 }), prompt: e.target.value },
                     })
                   }
+                  autoComplete="off"
                 />
                 <Flex gap={8} wrap align="center">
                   <Select
@@ -495,6 +504,7 @@ export function AssertionEditor({
                           judge: { ...(a.judge ?? { prompt: '', model: 'fast' }), passThreshold: v ?? 0.75 },
                         })
                       }
+                      autoComplete="off"
                     />
                   </Tooltip>
                 </Flex>

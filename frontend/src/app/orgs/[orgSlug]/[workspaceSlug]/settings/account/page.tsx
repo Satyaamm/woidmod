@@ -97,7 +97,7 @@ export default function AccountPage() {
                   label="First name"
                   rules={[{ required: true, message: 'First name is required' }]}
                 >
-                  <Input />
+                  <Input autoComplete="given-name" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
@@ -106,7 +106,7 @@ export default function AccountPage() {
                   label="Family name"
                   rules={[{ required: true, message: 'Family name is required' }]}
                 >
-                  <Input />
+                  <Input autoComplete="family-name" />
                 </Form.Item>
               </Col>
             </Row>
@@ -120,7 +120,7 @@ export default function AccountPage() {
             </Form.Item>
 
             <Form.Item name="jobTitle" label="Job title">
-              <Input />
+              <Input autoComplete="organization-title" />
             </Form.Item>
 
             <Row gutter={12}>
@@ -144,7 +144,7 @@ export default function AccountPage() {
               label="Avatar URL"
               rules={[{ type: 'url', message: 'Enter a valid URL' }]}
             >
-              <Input placeholder="https://…" />
+              <Input placeholder="https://…" autoComplete="photo" />
             </Form.Item>
 
             <Form.Item style={{ marginBottom: 0 }}>

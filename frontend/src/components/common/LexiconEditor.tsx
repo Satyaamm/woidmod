@@ -322,6 +322,7 @@ export function LexiconEditor({
             onChange={(e) => onSampleChange(e.target.value)}
             rows={2}
             placeholder="Thanks for calling — how can I help you today?"
+            autoComplete="off"
           />
 
           <div className={styles.sample}>
@@ -437,7 +438,7 @@ export function LexiconEditor({
             extra="Exactly as it appears in the agent's text. Matching ignores case unless you say otherwise, and the longest term wins."
             rules={[{ required: true, message: 'A term is required.' }]}
           >
-            <Input placeholder="Term to override" autoFocus />
+            <Input placeholder="Term to override" autoFocus autoComplete="off" />
           </Form.Item>
 
           <Form.Item
@@ -445,7 +446,7 @@ export function LexiconEditor({
             label="Respelling"
             extra="How you would write it for someone reading aloud. Works with every voice provider. Start here."
           >
-            <Input placeholder="Ack-mee Health" />
+            <Input placeholder="Ack-mee Health" autoComplete="off" />
           </Form.Item>
 
           <Form.Item
@@ -463,7 +464,7 @@ export function LexiconEditor({
               },
             ]}
           >
-            <Input placeholder="ˈæk.mi hɛlθ" />
+            <Input placeholder="ˈæk.mi hɛlθ" autoComplete="off" />
           </Form.Item>
 
           <Form.Item name="alphabet" label="Notation">

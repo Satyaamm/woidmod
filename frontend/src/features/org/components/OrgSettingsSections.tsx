@@ -119,7 +119,7 @@ export function OrgProfileSection({
                   extra="What the product shows in the switcher and the sidebar."
                   rules={[{ required: true, message: 'A display name is required' }]}
                 >
-                  <Input />
+                  <Input autoComplete="organization" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
@@ -128,7 +128,7 @@ export function OrgProfileSection({
                   label="Legal name"
                   extra="The registered legal entity name that appears on contracts and invoices."
                 >
-                  <Input />
+                  <Input autoComplete="off" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
@@ -143,17 +143,17 @@ export function OrgProfileSection({
                     },
                   ]}
                 >
-                  <Input addonBefore="/orgs/" />
+                  <Input addonBefore="/orgs/" autoComplete="off" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
                 <Form.Item name="website" label="Website">
-                  <Input placeholder="https://example.com" />
+                  <Input placeholder="https://example.com" autoComplete="url" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
                 <Form.Item name="industry" label="Industry">
-                  <Input placeholder="Financial services" />
+                  <Input placeholder="Financial services" autoComplete="off" />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
@@ -171,7 +171,7 @@ export function OrgProfileSection({
               </Col>
               <Col xs={24} sm={12}>
                 <Form.Item name="timezone" label="Default timezone" extra="Used for reports and calling windows.">
-                  <Input placeholder="Europe/Berlin" />
+                  <Input placeholder="Europe/Berlin" autoComplete="off" />
                 </Form.Item>
               </Col>
             </Row>
@@ -258,7 +258,7 @@ export function OrgTaxSection({
               </Col>
               <Col xs={24} sm={12}>
                 <Form.Item name="taxId" label={label} extra={`Printed on every invoice as your ${label}.`}>
-                  <Input placeholder={label === 'EIN' ? '12-3456789' : 'DE123456789'} />
+                  <Input placeholder={label === 'EIN' ? '12-3456789' : 'DE123456789'} autoComplete="off" />
                 </Form.Item>
               </Col>
               <Col xs={24}>
@@ -268,7 +268,7 @@ export function OrgTaxSection({
                   rules={[{ type: 'email', message: 'That does not look like an email address' }]}
                   extra="Where invoices go. Usually accounts-payable rather than a person."
                 >
-                  <Input />
+                  <Input autoComplete="email" />
                 </Form.Item>
               </Col>
             </Row>
@@ -439,6 +439,7 @@ export function OrgDomainsSection({
                 onChange={(e) => setDomain(e.target.value)}
                 placeholder="example.com"
                 autoFocus
+                autoComplete="off"
               />
             </Form.Item>
           </Form>

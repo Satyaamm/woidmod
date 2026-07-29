@@ -2,8 +2,13 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { PlusOutlined, SearchOutlined } from '@ant-design/icons';
-import { Avatar, Button, Card, Flex, Segmented, Table, Tooltip, Typography } from 'antd';
+import {
+  AudioOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+} from '@ant-design/icons';
+import { App, Avatar, Button, Card, Flex, Popconfirm, Segmented, Table, Tooltip, Typography } from 'antd';
 import { SearchInput } from '@/components/common/SearchInput';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
@@ -11,8 +16,9 @@ import { LatencyBadge } from '@/components/common/LatencyBadge';
 import { PageHeader } from '@/components/common/PageHeader';
 import { AgentStatusTag } from '@/components/common/StatusTag';
 import { TableSkeleton } from '@/components/common/Skeletons';
+import { CreateAgentModal } from '@/features/agents/components/CreateAgentModal';
 import { useAsync } from '@/hooks/useAsync';
-import { agentApi } from '@/lib/api';
+import { agentApi, platformApi } from '@/lib/api';
 import type { Agent, AgentStatus } from '@/lib/contract';
 import { formatNumber, formatPercent, formatRelative, formatUsd } from '@/lib/format';
 import { useCurrentScope, useScope, wsPath } from '@/lib/scope';
@@ -23,14 +29,37 @@ type StatusFilter = 'all' | AgentStatus;
 export default function AgentsPage() {
   const scope = useScope();
   const { workspace } = useCurrentScope();
+  const { message } = App.useApp();
   const canWrite = useSessionStore((s) => s.can('agent:write'));
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
 
   const state = useAsync(
     () => (workspace ? agentApi.list(workspace.id) : Promise.resolve([])),
     [workspace?.id],
   );
+  const caps = useAsync(() => platformApi.capabilities(), []);
+
+  /**
+   * Delete is an ARCHIVE, not a destroy — `agents.delete` in the control plane
+   * flips the status because call records reference the agent and must stay
+   * resolvable. The confirmation says so rather than promising a deletion that
+   * does not happen.
+   */
+  const archive = async (agent: Agent) => {
+    setArchivingId(agent.id);
+    try {
+      await agentApi.remove(agent.id);
+      message.success(`${agent.name} archived.`);
+      state.reload();
+    } catch (err) {
+      message.error((err as Error).message);
+    } finally {
+      setArchivingId(null);
+    }
+  };
 
   const columns: ColumnsType<Agent> = useMemo(
     () => [
@@ -129,8 +158,43 @@ export default function AgentsPage() {
           </Typography.Text>
         ),
       },
+      {
+        title: '',
+        key: 'actions',
+        width: 116,
+        align: 'right',
+        fixed: 'right',
+        render: (_, agent) => (
+          <Flex gap={2} justify="flex-end">
+            <Tooltip title="Talk to this agent in the browser">
+              <Link href={wsPath(scope, 'agents', agent.id, 'test')}>
+                <Button size="small" type="text" icon={<AudioOutlined />} />
+              </Link>
+            </Tooltip>
+            <Tooltip title={canWrite ? 'Edit' : 'Your role can’t edit agents'}>
+              <Link href={wsPath(scope, 'agents', agent.id)}>
+                <Button size="small" type="text" icon={<EditOutlined />} disabled={!canWrite} />
+              </Link>
+            </Tooltip>
+            {canWrite && agent.status !== 'archived' && (
+              <Popconfirm
+                title="Archive this agent?"
+                description="It stops taking calls and leaves the list. Past calls keep resolving to it, so it is archived rather than deleted."
+                okText="Archive"
+                okButtonProps={{ danger: true, loading: archivingId === agent.id }}
+                onConfirm={() => archive(agent)}
+              >
+                <Tooltip title="Archive">
+                  <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                </Tooltip>
+              </Popconfirm>
+            )}
+          </Flex>
+        ),
+      },
     ],
-    [scope],
+    // `archive` is stable enough for this table; `archivingId` drives the spinner.
+    [scope, canWrite, archivingId],
   );
 
   return (
@@ -140,7 +204,7 @@ export default function AgentsPage() {
         subtitle="Every agent in this workspace, with the numbers that decide whether it's working."
         actions={
           canWrite && (
-            <Button type="primary" icon={<PlusOutlined />}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
               New agent
             </Button>
           )
@@ -182,12 +246,25 @@ export default function AgentsPage() {
                 columns={columns}
                 dataSource={rows}
                 pagination={rows.length > 25 ? { pageSize: 25, showSizeChanger: false } : false}
-                scroll={{ x: 1080 }}
+                scroll={{ x: 1200 }}
               />
             );
           }}
         </AsyncBoundary>
       </Card>
+
+      {workspace && (
+        <CreateAgentModal
+          open={createOpen}
+          workspaceId={workspace.id}
+          capabilities={caps.data}
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => {
+            setCreateOpen(false);
+            state.reload();
+          }}
+        />
+      )}
     </>
   );
 }

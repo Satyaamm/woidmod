@@ -31,10 +31,14 @@ export interface SettingsSectionProps {
   description?: ReactNode;
   extra?: ReactNode;
   children: ReactNode;
-  /** Section is dirty and can be saved. */
-  dirty: boolean;
-  onSave: () => Promise<void>;
-  onReset: () => void;
+  /**
+   * Section is dirty and can be saved. Omit all three save props for a section
+   * that holds no settings — a read-out or a tool — which then renders without a
+   * save footer rather than with a permanently disabled one.
+   */
+  dirty?: boolean;
+  onSave?: () => Promise<void>;
+  onReset?: () => void;
   /** No write permission, or the section is not editable for a structural reason. */
   readOnly?: boolean;
   readOnlyReason?: ReactNode;
@@ -67,6 +71,7 @@ export function SettingsSection({
   const [justSaved, setJustSaved] = useState(false);
 
   const save = useCallback(async () => {
+    if (!onSave) return;
     setSaving(true);
     setError(null);
     try {
@@ -102,7 +107,7 @@ export function SettingsSection({
 
       {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
 
-      {!readOnly && (
+      {!readOnly && onSave && (
         <Flex className={styles.footer} justify="space-between" align="center" gap={8}>
           <span>
             {justSaved && (

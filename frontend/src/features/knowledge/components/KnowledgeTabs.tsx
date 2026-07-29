@@ -246,6 +246,7 @@ export function ChunksTab({
                     value={config.topK}
                     onChange={(v) => patch({ topK: v ?? 3 })}
                     style={{ width: 70 }}
+                    autoComplete="off"
                   />
                 </Flex>
                 <Slider min={1} max={20} value={config.topK} onChange={(v) => patch({ topK: v })} />
@@ -266,6 +267,7 @@ export function ChunksTab({
                     value={config.similarityThreshold}
                     onChange={(v) => patch({ similarityThreshold: v ?? 0.6 })}
                     style={{ width: 70 }}
+                    autoComplete="off"
                   />
                 </Flex>
                 <Slider
@@ -293,6 +295,7 @@ export function ChunksTab({
                     step={64}
                     value={config.chunkSize}
                     onChange={(v) => patch({ chunkSize: v ?? 512 })}
+                    autoComplete="off"
                   />
                 </div>
                 <div>
@@ -305,6 +308,7 @@ export function ChunksTab({
                     step={16}
                     value={config.chunkOverlap}
                     onChange={(v) => patch({ chunkOverlap: v ?? 64 })}
+                    autoComplete="off"
                   />
                 </div>
                 <div>
@@ -351,6 +355,7 @@ export function ChunksTab({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 style={{ width: 200 }}
+                autoComplete="off"
               />
             }
           >

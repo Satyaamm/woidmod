@@ -34,7 +34,10 @@ services:
       POSTGRES_PASSWORD: woidmod
       POSTGRES_DB: woidmod
     ports:
-      - '5432:5432'
+      # Host 5433: a natively-installed Postgres binds 127.0.0.1:5432 on many dev
+      # machines and wins over Docker's wildcard bind, so `localhost:5432` would
+      # silently reach the wrong server. Container-side stays 5432.
+      - '5433:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Init scripts run once, on first boot of an empty volume, in filename order.
@@ -49,6 +52,8 @@ services:
       - ./backend/control-plane/src/db/migrations/0004_agent_flow.sql:/docker-entrypoint-initdb.d/0004_agent_flow.sql:ro
       - ./backend/control-plane/src/db/migrations/0005_call_persistence.sql:/docker-entrypoint-initdb.d/0005_call_persistence.sql:ro
       - ./backend/control-plane/src/db/migrations/0006_mfa.sql:/docker-entrypoint-initdb.d/0006_mfa.sql:ro
+      - ./backend/control-plane/src/db/migrations/0007_jurisdiction_ruleset.sql:/docker-entrypoint-initdb.d/0007_jurisdiction_ruleset.sql:ro
+      - ./backend/control-plane/src/db/migrations/0008_tenant_teardown.sql:/docker-entrypoint-initdb.d/0008_tenant_teardown.sql:ro
       - ./backend/control-plane/src/db/rls.sql:/docker-entrypoint-initdb.d/zzz_rls.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U woidmod -d woidmod']

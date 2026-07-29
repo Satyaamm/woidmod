@@ -39,13 +39,25 @@ export function ProviderCredentialsTable({
 
   const state = useAsync(() => providerApi.list(), [workspaceId, refreshKey]);
 
+  /**
+   * A real authenticated call to the vendor, not a field check.
+   *
+   * The three outcomes stay distinct on purpose: a vendor we could not reach
+   * (`checked: 'structural'`) is not the same as a vendor that rejected the key,
+   * and showing both as "invalid" would send someone to rotate a working
+   * credential over a network blip. Held on screen until dismissed — a probe can
+   * return a paragraph naming the field that is wrong, which is too much for a
+   * toast that vanishes in three seconds.
+   */
   const verify = async (c: ProviderCredentialView) => {
     setVerifyingId(c.id);
     try {
       const res = await providerApi.verify(c.id, workspaceId);
+      const succeeded = res.checked === 'live' && res.status === 'valid';
       message.open({
-        type: res.status === 'valid' ? 'success' : res.status === 'unverified' ? 'info' : 'error',
-        content: res.message,
+        type: succeeded ? 'success' : res.checked === 'live' ? 'error' : 'warning',
+        content: `${c.name}: ${res.message}`,
+        duration: succeeded ? 4 : 10,
       });
       onMutated();
     } catch (err) {
@@ -126,7 +138,7 @@ export function ProviderCredentialsTable({
       align: 'right',
       render: (_, c) => (
         <Flex gap={4} justify="flex-end">
-          <Tooltip title="Test these credentials against the provider">
+          <Tooltip title="Make a real authenticated call to the provider with this key">
             <Button
               size="small"
               type="text"
@@ -134,7 +146,7 @@ export function ProviderCredentialsTable({
               loading={verifyingId === c.id}
               onClick={() => verify(c)}
             >
-              Verify
+              Test
             </Button>
           </Tooltip>
           {canManage && (

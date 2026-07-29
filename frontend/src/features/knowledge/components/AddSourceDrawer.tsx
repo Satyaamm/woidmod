@@ -140,7 +140,7 @@ export function AddSourceDrawer({
           label="Name"
           rules={[{ required: true, message: 'Give it a name you will recognise in a list of twenty.' }]}
         >
-          <Input placeholder="Help centre, Tariff PDF, Escalation policy…" />
+          <Input placeholder="Help centre, Tariff PDF, Escalation policy…" autoComplete="off" />
         </Form.Item>
 
         {type === 'url' && (
@@ -153,7 +153,7 @@ export function AddSourceDrawer({
                 { type: 'url', message: 'That does not look like a URL.' },
               ]}
             >
-              <Input placeholder="https://docs.example.com/help" />
+              <Input placeholder="https://docs.example.com/help" autoComplete="off" />
             </Form.Item>
 
             <Form.Item
@@ -170,7 +170,7 @@ export function AddSourceDrawer({
             </Form.Item>
 
             <Form.Item name="maxPages" label="Page limit">
-              <InputNumber min={1} max={5000} style={{ width: 160 }} />
+              <InputNumber min={1} max={5000} style={{ width: 160 }} autoComplete="off" />
             </Form.Item>
 
             <Form.Item
@@ -178,7 +178,7 @@ export function AddSourceDrawer({
               label="Exclude paths"
               extra="One glob per line, matched against the path. Changelogs, archives and paginated indexes are the usual offenders."
             >
-              <Input.TextArea rows={3} placeholder={'/blog/*\n/*/print\n/archive/**'} />
+              <Input.TextArea rows={3} placeholder={'/blog/*\n/*/print\n/archive/**'} autoComplete="off" />
             </Form.Item>
 
             <Flex gap={20} wrap>
@@ -191,7 +191,7 @@ export function AddSourceDrawer({
               >
                 {({ getFieldValue }) => (
                   <Form.Item name="refreshIntervalHours" label="Every (hours)">
-                    <InputNumber min={1} max={720} disabled={!getFieldValue('autoRefresh')} style={{ width: 120 }} />
+                    <InputNumber min={1} max={720} disabled={!getFieldValue('autoRefresh')} style={{ width: 120 }} autoComplete="off" />
                   </Form.Item>
                 )}
               </Form.Item>
@@ -232,7 +232,7 @@ export function AddSourceDrawer({
             rules={[{ required: true, message: 'Paste something.' }]}
             extra="Markdown headings become chunk labels, so ## sections are worth keeping."
           >
-            <Input.TextArea rows={12} placeholder="# Escalation policy&#10;&#10;Transfer to a human when…" />
+            <Input.TextArea rows={12} placeholder="# Escalation policy&#10;&#10;Transfer to a human when…" autoComplete="off" />
           </Form.Item>
         )}
 
@@ -255,7 +255,7 @@ export function AddSourceDrawer({
             }
             extra="Default 3"
           >
-            <InputNumber min={1} max={20} style={{ width: 120 }} />
+            <InputNumber min={1} max={20} style={{ width: 120 }} autoComplete="off" />
           </Form.Item>
           <Form.Item
             name="similarityThreshold"
@@ -266,7 +266,7 @@ export function AddSourceDrawer({
             }
             extra="Default 0.60"
           >
-            <InputNumber min={0} max={1} step={0.05} style={{ width: 120 }} />
+            <InputNumber min={0} max={1} step={0.05} style={{ width: 120 }} autoComplete="off" />
           </Form.Item>
         </Flex>
 

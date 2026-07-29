@@ -95,11 +95,11 @@ export function CreateCampaignModal({
         }}
       >
         <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name this campaign' }]}>
-          <Input placeholder="Q3 renewals outreach" autoFocus />
+          <Input placeholder="Q3 renewals outreach" autoFocus autoComplete="off" />
         </Form.Item>
 
         <Form.Item name="description" label="Description">
-          <Input.TextArea placeholder="What this campaign is for." autoSize={{ minRows: 2, maxRows: 4 }} />
+          <Input.TextArea placeholder="What this campaign is for." autoSize={{ minRows: 2, maxRows: 4 }} autoComplete="off" />
         </Form.Item>
 
         <Form.Item name="agentId" label="Agent" rules={[{ required: true, message: 'Pick an agent to run the calls' }]}>
@@ -141,14 +141,14 @@ export function CreateCampaignModal({
           style={{ marginTop: 8 }}
           rules={[{ required: true, message: 'Set a dial rate' }]}
         >
-          <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} />
+          <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} autoComplete="off" />
         </Form.Item>
         <Form.Item
           name="maxConcurrentCalls"
           label="Max concurrent calls"
           rules={[{ required: true, message: 'Set a concurrency cap' }]}
         >
-          <InputNumber min={1} step={1} style={{ width: '100%' }} />
+          <InputNumber min={1} step={1} style={{ width: '100%' }} autoComplete="off" />
         </Form.Item>
       </Form>
     </Modal>

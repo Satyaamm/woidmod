@@ -3,11 +3,11 @@
  *
  * URLs are `/orgs/[orgSlug]/[workspaceSlug]/...`, which means a workspace slug sits
  * in the same path position as any future org-level route. Without a denylist,
- * `/orgs/acme/settings` is ambiguous: org settings page, or a workspace literally
+ * `/orgs/your-org/settings` is ambiguous: org settings page, or a workspace literally
  * named "settings"?
  *
- * The alternative designs were an extra path segment (`/orgs/acme/w/production/…`)
- * or a sentinel (`/orgs/acme/~/settings`). We chose reserved words because the URLs
+ * The alternative designs were an extra path segment (`/orgs/your-org/w/production/…`)
+ * or a sentinel (`/orgs/your-org/~/settings`). We chose reserved words because the URLs
  * stay short and we already validate slugs at creation — but that choice only holds
  * if the list is generous NOW, while there are no customers. Adding an org-level
  * route later that collides with an existing workspace slug is a migration, not a

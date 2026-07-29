@@ -34,6 +34,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -883,11 +884,47 @@ export const dispatchAudit = pgTable(
         consentModel: string;
       }>()
       .notNull(),
+    /**
+     * Which platform ruleset decided this call, and what it resolved to. Nullable
+     * for rows written before 0007 — a decision made then genuinely has no version
+     * to point at, and inventing one would be worse than admitting it.
+     */
+    rulesetVersion: text('ruleset_version'),
+    ruleSnapshot: jsonb('rule_snapshot').$type<Record<string, unknown>>(),
   },
   (t) => ({
     // list(scope, {campaignId|leadId}) — the audit review screen.
     wsCampaignIdx: index('dispatch_audit_ws_campaign_idx').on(t.workspaceId, t.campaignId, t.decidedAt),
     wsLeadIdx: index('dispatch_audit_ws_lead_idx').on(t.workspaceId, t.leadId),
+  }),
+);
+
+/**
+ * Per-country compliance rules — PLATFORM data, shared by every tenant.
+ *
+ * Versioned rather than mutated: a dispatch decision stamps the version it used, so
+ * an audit row stays explainable after the rules change. Superseding a rule means
+ * inserting a new version and stamping `retired_at` on the old one; nothing is
+ * edited in place and nothing is deleted.
+ */
+export const jurisdictionRules = pgTable(
+  'jurisdiction_rules',
+  {
+    country: char('country', { length: 2 }).notNull(),
+    version: integer('version').notNull(),
+    rule: jsonb('rule').$type<Record<string, unknown>>().notNull(),
+    /** When counsel signed this version off. null = never reviewed. */
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true, mode: 'date' }),
+    reviewedBy: text('reviewed_by'),
+    source: text('source').notNull(),
+    /** Lets a known future change be staged now and take effect on the day. */
+    effectiveFrom: timestamp('effective_from', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    retiredAt: timestamp('retired_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.country, t.version] }),
+    activeIdx: index('jurisdiction_rules_active_idx').on(t.country, t.effectiveFrom),
   }),
 );
 

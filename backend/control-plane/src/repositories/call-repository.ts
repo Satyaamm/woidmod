@@ -14,6 +14,7 @@
 
 import type { WorkspaceScope } from '../domain/tenant.js';
 import type { Call, CallOutcome, CallStatus, CallTrace } from '../domain/call-schemas.js';
+import type { Mode } from '../domain/schemas.js';
 import type { ListOptions, Page } from './types.js';
 
 export interface CallListFilters extends ListOptions {
@@ -22,6 +23,13 @@ export interface CallListFilters extends ListOptions {
   status?: CallStatus;
   /** Keeps only calls whose p95 turn latency is at or above this — the outlier hunt. */
   minLatencyMs?: number;
+  /**
+   * Test and live are separate worlds: a browser-only rehearsal must never show up
+   * next to a call that reached a real customer. `CallService.list` fills this from
+   * the request's mode when the caller does not pass one, so the dashboard's
+   * test/live toggle filters the log without every route remembering to ask.
+   */
+  mode?: Mode;
 }
 
 export interface CallRepository {

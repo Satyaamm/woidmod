@@ -122,7 +122,7 @@ function VoicesInner() {
         <VoiceLibraryTab
           filters={filters}
           onFilters={(next) => setParams(next)}
-          voices={voices.data ?? null}
+          catalogue={voices.data ?? null}
           voicesLoading={voices.loading}
           onPreview={audioReachable ? previewVoice : undefined}
         />
@@ -152,7 +152,7 @@ function VoicesInner() {
     <>
       <PageHeader
         title="Voices & pronunciation"
-        subtitle="Which languages are ready for live traffic, and how your agents say the words that matter to you."
+        subtitle="The voices your connected providers actually offer, and how your agents say the words that matter to you."
       />
       <Tabs
         activeKey={active}

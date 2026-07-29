@@ -27,7 +27,11 @@ import type { Logger } from './core/patterns/factory.js';
 
 import { MockLlmProvider, MockSttProvider, MockTtsProvider } from './providers/mock.js';
 import type { LlmProvider, SttProvider, TtsProvider } from './providers/types.js';
-import { PROVIDER_CATALOG } from './providers/catalog.js';
+import {
+  CATALOG_ONLY_POSTURES,
+  PROVIDER_CATALOG,
+  type ProviderCatalogEntry,
+} from './providers/catalog.js';
 
 import type { DbHandle } from './db/client.js';
 import type {
@@ -103,7 +107,13 @@ import { AuthService, resolveAuthSecrets } from './services/auth-service.js';
 import { MembershipService } from './services/membership-service.js';
 import { InvitationService } from './services/invitation-service.js';
 import { ApiKeyService } from './services/apikey-service.js';
-import { buildComplianceChain } from './services/compliance.js';
+import { BUILT_IN_RULESET, buildComplianceChain } from './services/compliance.js';
+import { OutboundGuard } from './services/outbound-guard.js';
+import { JurisdictionRulesetService } from './services/jurisdiction-ruleset.js';
+import { PostgresJurisdictionRuleRepository } from './repositories/postgres/jurisdiction-rules.js';
+import { DncService } from './services/dnc.js';
+import { httpRegistriesFromEnv } from './services/dnc-providers.js';
+import { Dialer } from './services/dialer.js';
 import {
   ProviderCredentialService,
   MemoryProviderCredentialRepository,
@@ -117,6 +127,7 @@ import {
 import { MemoryLexiconRepository } from './services/lexicon.js';
 import { liveKitFromEnv, type LiveKitService } from './services/livekit.js';
 import { sipFromEnv, type SipService } from './services/sip.js';
+import { newId } from './domain/ids.js';
 // Phase 4 feature services (in-memory; self-contained verticals).
 import { createKnowledgeService, type KnowledgeService } from './services/knowledge-service.js';
 import { createVectorStore, type VectorStoreConfig } from './rag/vector-adapters.js';
@@ -247,20 +258,21 @@ export interface Container {
     livekit: LiveKitService;
     sip: SipService;
     compliance: ReturnType<typeof buildComplianceChain>;
+    /** Runs that chain for manually placed outbound calls, and audits the decision. */
+    outboundGuard: OutboundGuard;
+    /** The versioned per-country ruleset every decision resolves against. */
+    jurisdictions: JurisdictionRulesetService;
+    /** DNC screening: the org's own list plus any configured statutory registries. */
+    dnc: DncService;
+    /** Campaign dialer — gated, paced and audited. */
+    dialer: Dialer;
   };
 
   /**
    * What a customer could configure, derived from registered factories. Drives the
    * dashboard's credential forms so no vendor form is hardcoded in the frontend.
    */
-  providerCatalog: Array<{
-    key: string;
-    kind: 'stt' | 'llm' | 'tts';
-    label: string;
-    configFields: string[];
-    secretFields: string[];
-    note?: string;
-  }>;
+  providerCatalog: ProviderCatalogEntry[];
 
   /** Regulatory controls. docs/14. */
   compliance: {
@@ -353,6 +365,12 @@ export function createContainer(opts: ContainerOptions = {}): Container {
     });
   }
 
+  // Vendors the worker can run but the control plane has no in-process adapter
+  // for. Without a posture the eligibility gate refuses them as
+  // `undeclared_posture` — fail-closed, but for the wrong reason. Registered
+  // before `registerProviders`, which overwrites any key that does have a factory.
+  for (const posture of CATALOG_ONLY_POSTURES) postures.register(posture);
+
   // -- Fallback executors --------------------------------------------------
   // Timeouts are per-stage and tight: on a phone call a slow dependency is worse
   // than a failed one.
@@ -444,8 +462,15 @@ export function createContainer(opts: ContainerOptions = {}): Container {
   );
 
   // -- Services ------------------------------------------------------------
-  const workspaces = new WorkspaceService(repositories.workspaces, repositories.orgs);
-  const agents = new AgentService(repositories.agents, repositories.workspaces);
+  const workspaces = new WorkspaceService(repositories.workspaces, repositories.orgs, {
+    // Counted live so the workspace cards stop reporting stored zeros.
+    agents: repositories.agents,
+    numbers: repositories.numbers,
+    calls: repositories.calls,
+  });
+  // The call repository is passed so the agent list can derive its own
+  // statistics from the call log rather than reporting stored zeros.
+  const agents = new AgentService(repositories.agents, repositories.workspaces, repositories.calls);
   const secrets = resolveAuthSecrets(logger);
 
   const memberships = new MembershipService({
@@ -499,6 +524,46 @@ export function createContainer(opts: ContainerOptions = {}): Container {
     token = token || config.TWILIO_AUTH_TOKEN;
     return sid && token ? new TwilioNumberProvider(sid, token) : null;
   };
+
+  // One chain instance: the campaign dialer and the manual outbound guard must
+  // decide by the same rules, or "why was this call allowed" has two answers.
+  const complianceChain = buildComplianceChain();
+
+  // In-memory mode has no ruleset table; the service then serves the built-in set,
+  // which is the same data the migration seeds.
+  const jurisdictions = new JurisdictionRulesetService({
+    repo: db ? new PostgresJurisdictionRuleRepository(db) : null,
+    logger,
+  });
+
+  // No statutory registry integrations ship yet, so `providers` is empty: the org's
+  // own suppression list is screened for real and every statutory registry comes
+  // back `unavailable`. That is the honest state, and DNC_REQUIRE_SCREENING decides
+  // whether it blocks the dial or is merely recorded.
+  // Registry keys the ruleset actually names — anything else can never be
+  // consulted, so a provider configured for one is a misconfiguration worth
+  // saying out loud rather than accepting silently.
+  const knownRegistries = new Set(
+    Object.values(BUILT_IN_RULESET.rules).flatMap((r) => r.dncRegistries as string[]),
+  );
+
+  const dnc = new DncService({
+    internal: (scope, e164) => repositories.leads.isSuppressed(scope, e164),
+    providers: httpRegistriesFromEnv(config.DNC_REGISTRY_PROVIDERS, logger, knownRegistries),
+    logger,
+  });
+
+  // Say which statutory registries can actually be screened. With none
+  // configured the only real list is the workspace's own suppression list, and an
+  // operator should learn that from the boot log rather than from an audit.
+  logger.info('dnc screening', {
+    statutoryRegistries: dnc.configured,
+    internalListAlwaysScreened: true,
+    unscreenableRefused: config.DNC_REQUIRE_SCREENING,
+  });
+
+  // One instance, shared by the services literal and the dialer's placeCall effect.
+  const sipService = sipFromEnv();
 
   const services = {
     workspaces,
@@ -554,8 +619,59 @@ export function createContainer(opts: ContainerOptions = {}): Container {
     webhooks: createWebhookService(encryption),
     evals: createEvalService(),
     livekit: liveKitFromEnv(),
-    sip: sipFromEnv(),
-    compliance: buildComplianceChain(),
+    sip: sipService,
+    compliance: complianceChain,
+    jurisdictions,
+    dnc,
+    outboundGuard: new OutboundGuard({
+      chain: complianceChain,
+      audit: repositories.dispatchAudit,
+      now: () => new Date(),
+      ruleset: () => jurisdictions.current(),
+      dnc,
+      requireDncScreening: config.DNC_REQUIRE_SCREENING,
+    }),
+    dialer: new Dialer(
+      complianceChain,
+      {
+        now: () => new Date(),
+        newAuditId: () => newId('dispatchAudit'),
+        screenDnc: async ({ scope, e164, country, registries }) => {
+          const r = await dnc.screen(scope, { e164, country, registries });
+          return { onList: r.onList, screened: r.screened, unavailable: r.unavailable };
+        },
+        placeCall: async (request) => {
+          // The dialer decided; SIP only carries it out. A missing trunk is a
+          // configuration error at this point, not a decision.
+          if (!sipService.configured || !config.SIP_OUTBOUND_TRUNK_ID) {
+            throw new Error('SIP is not configured — set LIVEKIT_SIP_URI and SIP_OUTBOUND_TRUNK_ID');
+          }
+          const callId = newId('call');
+          await sipService.createOutboundCall({
+            trunkId: request.trunkId || config.SIP_OUTBOUND_TRUNK_ID,
+            toNumber: request.toE164,
+            roomName: `call-${callId}`,
+            metadata: JSON.stringify({
+              agentId: request.agentId,
+              workspaceId: request.workspaceId,
+              orgId: request.orgId,
+              campaignId: request.campaignId,
+              leadId: request.leadId,
+              mode: 'live',
+              callId,
+              twoPartyConsentRequired: request.twoPartyConsentRequired,
+              aiDisclosureRequired: request.aiDisclosureRequired,
+            }),
+          });
+          return { callId };
+        },
+        recordAudit: async (entry) => {
+          await repositories.dispatchAudit.append(entry);
+        },
+      },
+      repositories.leads,
+      config.DNC_REQUIRE_SCREENING,
+    ),
   };
 
   // -- Trace recorder ------------------------------------------------------

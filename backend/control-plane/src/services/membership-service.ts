@@ -7,10 +7,10 @@
  *    no one who can pay the bill, transfer ownership, or delete it — it is an
  *    unrecoverable state that only support can fix. docs/10 §Roles.
  * 2. **Domain-based org discovery** (docs/11 §5). The second person from
- *    `@acme.com` is *offered* the existing org rather than silently given a
+ *    `@example.com` is *offered* the existing org rather than silently given a
  *    duplicate one. Offered, never auto-joined, and only for a domain the org
  *    has actually proven it controls via DNS TXT — otherwise anyone who
- *    registers `acme.com` in our table inherits Acme's tenants.
+ *    registers `example.com` in our table inherits that org's tenants.
  */
 
 import { newId } from '../domain/ids.js';
@@ -111,7 +111,7 @@ export class MembershipService {
     return this.deps.memberships.findForUserInOrg(userId, orgId);
   }
 
-  /** docs/11 §5 — "Join Acme?" instead of a fifth duplicate Acme. */
+  /** docs/11 §5 — "Join the existing org?" instead of a fifth duplicate org. */
   async findJoinableOrg(email: string): Promise<Organization | null> {
     return findJoinableOrgFor(this.deps.orgs, email);
   }

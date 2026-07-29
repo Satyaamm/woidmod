@@ -110,11 +110,11 @@ export function WebhookDrawer({
           ]}
           extra="Must be HTTPS and answer within 10 s with any 2xx. Anything else counts as a failure and is retried."
         >
-          <Input placeholder="https://hooks.example.com/woidmod" />
+          <Input placeholder="https://hooks.example.com/woidmod" autoComplete="off" />
         </Form.Item>
 
         <Form.Item name="description" label="Description">
-          <Input placeholder="What consumes this" />
+          <Input placeholder="What consumes this" autoComplete="off" />
         </Form.Item>
 
         <Flex gap={20} wrap>
@@ -126,7 +126,7 @@ export function WebhookDrawer({
             label="Delivery attempts"
             extra="Exponential backoff between attempts."
           >
-            <InputNumber min={1} max={10} style={{ width: 110 }} />
+            <InputNumber min={1} max={10} style={{ width: 110 }} autoComplete="off" />
           </Form.Item>
         </Flex>
 
@@ -183,6 +183,7 @@ export function WebhookDrawer({
                     onClick={() => setRevealed((r) => !r)}
                   />
                 }
+                autoComplete="off"
               />
               <Button
                 size="small"

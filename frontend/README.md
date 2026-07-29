@@ -66,7 +66,7 @@ Rules that keep it that way:
 
 `docs/09` and `docs/10` say "project"; `docs/12` renames the second level to
 **Workspace** (a business boundary — brand, business unit or end-client) and
-`contract.ts` follows that. Routes therefore read `/orgs/acme/collections`.
+`contract.ts` follows that. Routes therefore read `/orgs/your-org/collections`.
 
 ## State
 

@@ -29,6 +29,15 @@ export interface JurisdictionRule {
   requireConsentProof: boolean;
   /** Label for the org's tax identifier field. */
   taxIdLabel: string;
+  /**
+   * Whether unsolicited calling is permitted on a public holiday in this country.
+   *
+   * Absent means `allowed`, and every seeded rule leaves it absent on purpose: the
+   * platform knows the DATES (`holidays.ts`) but whether they forbid calling is a
+   * legal question. Counsel sets this per country in the ruleset; nothing changes
+   * behaviour until they do.
+   */
+  holidayCalling?: 'allowed' | 'restricted';
   notes: string;
 }
 
@@ -130,6 +139,226 @@ export function taxIdLabelFor(country: string): string {
   return JURISDICTIONS[country.toUpperCase()]?.taxIdLabel ?? (isEu(country) ? 'VAT number' : 'Tax ID');
 }
 
+// ---------------------------------------------------------------------------
+// Per-callee rule resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Applied when a country has no reviewed entry in `JURISDICTIONS`. Fails closed:
+ * all-party consent, disclosure on, consent proof required, narrow window.
+ * Also the source of the defaults in `defaultComplianceProfile`, so "unknown
+ * country" means one thing in the whole system.
+ */
+export const CONSERVATIVE_FALLBACK: JurisdictionRule = {
+  consentModel: 'two_party',
+  aiDisclosureRequired: true,
+  callingWindow: { startHour: 9, endHour: 20 },
+  dncRegistries: ['internal'],
+  requireConsentProof: true,
+  taxIdLabel: 'Tax ID',
+  notes: 'No reviewed ruleset for this country — conservative defaults applied.',
+};
+
+export type CallingWindow = ComplianceProfile['callingWindows'][number];
+
+/** Which layer produced a field's value. Every layer may only tighten. */
+export type RuleLayer = 'platform' | 'fallback' | 'workspace';
+
+/**
+ * One country's rule as STORED — the rule itself plus the provenance a regulator
+ * asks about: who reviewed it, when, and where it came from.
+ *
+ * `reviewedAt: null` is the honest state of everything seeded from this file: the
+ * values are directional and have not been through counsel. The UI surfaces that
+ * rather than letting an unreviewed rule look authoritative.
+ */
+export interface JurisdictionRuleRecord extends JurisdictionRule {
+  version: number;
+  reviewedAt: string | null;
+  source: string;
+}
+
+/**
+ * A complete, versioned set of country rules.
+ *
+ * Versioned because rules change: an audit row from six months ago has to be
+ * explainable against the rules in force *then*, not the ones in force now. The
+ * version string is stamped into every dispatch decision for exactly that reason.
+ */
+export interface Ruleset {
+  version: string;
+  rules: Record<string, JurisdictionRuleRecord>;
+}
+
+/**
+ * The ruleset compiled into the build. It is the seed of record — a fresh install
+ * is complete without a database — and the fallback whenever the stored ruleset is
+ * unavailable, so a database problem can never quietly disable the gate.
+ */
+export const BUILT_IN_RULESET: Ruleset = {
+  version: 'built-in',
+  rules: Object.fromEntries(
+    Object.entries(JURISDICTIONS).map(([country, rule]) => [
+      country,
+      { ...rule, version: 1, reviewedAt: null, source: 'built-in (unreviewed)' } satisfies JurisdictionRuleRecord,
+    ]),
+  ),
+};
+
+/**
+ * The rules binding ONE call, resolved from the callee's own country.
+ *
+ * This exists because the law follows the person being called, not the company
+ * placing the call. A workspace registered in the UK dialling a French number is
+ * bound by French calling hours and must screen Bloctel — reading those off the
+ * workspace's own profile (which is what the profile alone describes) is wrong in
+ * both directions: too lax where the callee's country is stricter, and needlessly
+ * restrictive where it is not.
+ *
+ * Resolution is MONOTONIC — every layer may only tighten:
+ *
+ *   platform ruleset for the callee's country   (or CONSERVATIVE_FALLBACK)
+ *     ∩ workspace profile (already narrowed by the campaign, see effectiveProfile)
+ *
+ * so a workspace can always be stricter than the law and never looser.
+ */
+export interface EffectiveRule {
+  country: string;
+  state?: string;
+  consentModel: 'one_party' | 'two_party';
+  aiDisclosureRequired: boolean;
+  callingWindows: CallingWindow[];
+  dncRegistries: string[];
+  requireConsentProof: boolean;
+  maxAttemptsPerLead: number;
+  /** Whether calling is permitted on a public holiday here. */
+  holidayCalling: 'allowed' | 'restricted';
+  /** True when the callee's country has no ruleset entry at all. */
+  unknownCountry: boolean;
+  /** The ruleset in force for this decision — stamped into the audit. */
+  rulesetVersion: string;
+  /** When counsel last reviewed this country's rule. null = never. */
+  reviewedAt: string | null;
+  /** Per field, the layers that set or tightened it — for the UI and the audit. */
+  provenance: Record<
+    'consentModel' | 'aiDisclosureRequired' | 'callingWindows' | 'dncRegistries' | 'requireConsentProof',
+    RuleLayer[]
+  >;
+}
+
+/**
+ * PURE. Intersection of two window sets. Used everywhere a narrower constraint is
+ * layered on a broader one; a layer can shrink a window, never widen it.
+ * An empty set means "unconstrained", so it yields to the other side.
+ */
+export function intersectWindows(
+  a: readonly CallingWindow[],
+  b: readonly CallingWindow[],
+): CallingWindow[] {
+  if (a.length === 0) return [...b];
+  if (b.length === 0) return [...a];
+
+  const out: CallingWindow[] = [];
+  for (const x of a) {
+    for (const y of b) {
+      if (x.dayOfWeek !== y.dayOfWeek) continue;
+      const startHour = Math.max(x.startHour, y.startHour);
+      const endHour = Math.min(x.endHour, y.endHour);
+      if (startHour < endHour) out.push({ dayOfWeek: x.dayOfWeek, startHour, endHour });
+    }
+  }
+  return out;
+}
+
+/** Mon–Sat from a country's single daily window. Sunday stays closed unless opted in. */
+function windowsFor(rule: JurisdictionRule): CallingWindow[] {
+  return [1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+    dayOfWeek,
+    startHour: rule.callingWindow.startHour,
+    endHour: rule.callingWindow.endHour,
+  }));
+}
+
+/**
+ * PURE. Resolve the rules binding a call to one callee.
+ *
+ * `profile` is the workspace's profile, already narrowed by the campaign where one
+ * applies (`effectiveProfile`), which is why the workspace and campaign layers are
+ * not distinguished in `provenance`.
+ */
+export function resolveRule(input: {
+  calleeCountry: string;
+  calleeState?: string;
+  profile: ComplianceProfile;
+  /** Defaults to the compiled-in set; the running service passes the stored one. */
+  ruleset?: Ruleset;
+}): EffectiveRule {
+  const ruleset = input.ruleset ?? BUILT_IN_RULESET;
+  const cc = input.calleeCountry.toUpperCase();
+  const base = ruleset.rules[cc];
+  const rule = base ?? CONSERVATIVE_FALLBACK;
+  const origin: RuleLayer = base ? 'platform' : 'fallback';
+  const { profile } = input;
+
+  // Recording consent is decided at STATE level in the US: the federal baseline is
+  // one-party, but 14 states require all parties to agree.
+  const stateTwoParty =
+    cc === 'US' && !!input.calleeState && US_STATE_TWO_PARTY.includes(input.calleeState.toUpperCase());
+  const workspaceTwoParty = profile.consentModel === 'two_party';
+  const consentModel: 'one_party' | 'two_party' =
+    rule.consentModel === 'two_party' || stateTwoParty || workspaceTwoParty ? 'two_party' : 'one_party';
+
+  const platformWindows = windowsFor(rule);
+  const callingWindows = intersectWindows(platformWindows, profile.callingWindows);
+
+  // Registries the callee's country requires, plus 'internal' (the org's own
+  // suppression list, which always applies).
+  //
+  // The workspace's own list is seeded from ITS country, so carrying it over
+  // wholesale would screen a US number against UK TPS — a meaningless lookup and a
+  // confusing audit row. Entries that are another country's statutory registry are
+  // therefore dropped; anything else the workspace added is a deliberate custom
+  // registry and is kept, because dropping it would be a loosening.
+  const foreignStatutory = new Set(
+    Object.entries(ruleset.rules)
+      .filter(([country]) => country !== cc)
+      .flatMap(([, j]) => j.dncRegistries)
+      .filter((r) => r !== 'internal' && !rule.dncRegistries.includes(r)),
+  );
+  const workspaceExtras = profile.dncRegistries.filter((r) => !foreignStatutory.has(r));
+  const dncRegistries = [...new Set([...rule.dncRegistries, ...workspaceExtras, 'internal'])];
+
+  const requireConsentProof = rule.requireConsentProof || profile.requireConsentProof;
+  const aiDisclosureRequired = rule.aiDisclosureRequired || profile.aiDisclosureRequired;
+
+  const tightened = (by: boolean): RuleLayer[] => (by ? [origin, 'workspace'] : [origin]);
+
+  return {
+    country: cc,
+    state: input.calleeState,
+    consentModel,
+    aiDisclosureRequired,
+    callingWindows,
+    dncRegistries,
+    requireConsentProof,
+    maxAttemptsPerLead: profile.maxAttemptsPerLead,
+    holidayCalling: rule.holidayCalling ?? 'allowed',
+    unknownCountry: !base,
+    rulesetVersion: ruleset.version,
+    reviewedAt: base?.reviewedAt ?? null,
+    provenance: {
+      consentModel: tightened(workspaceTwoParty && rule.consentModel !== 'two_party'),
+      aiDisclosureRequired: tightened(profile.aiDisclosureRequired && !rule.aiDisclosureRequired),
+      callingWindows: tightened(
+        profile.callingWindows.length > 0 &&
+          JSON.stringify(callingWindows) !== JSON.stringify(platformWindows),
+      ),
+      dncRegistries: tightened(workspaceExtras.some((r) => !rule.dncRegistries.includes(r))),
+      requireConsentProof: tightened(profile.requireConsentProof && !rule.requireConsentProof),
+    },
+  };
+}
+
 /**
  * Build a starting compliance profile for a workspace from its country.
  *
@@ -139,15 +368,15 @@ export function taxIdLabelFor(country: string): string {
  */
 export function defaultComplianceProfile(country: string): ComplianceProfile {
   const cc = country.toUpperCase();
-  const rule = JURISDICTIONS[cc];
+  const rule = JURISDICTIONS[cc] ?? CONSERVATIVE_FALLBACK;
 
-  const consentModel = rule?.consentModel ?? 'two_party';
-  const window = rule?.callingWindow ?? { startHour: 9, endHour: 20 };
+  const consentModel = rule.consentModel;
+  const window = rule.callingWindow;
 
   return {
     jurisdictions: [cc],
     consentModel,
-    aiDisclosureRequired: rule?.aiDisclosureRequired ?? true,
+    aiDisclosureRequired: rule.aiDisclosureRequired,
     aiDisclosureText: defaultDisclosureText(cc),
     // Mon–Sat by default; Sunday calling is off unless explicitly enabled.
     callingWindows: [1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
@@ -155,12 +384,12 @@ export function defaultComplianceProfile(country: string): ComplianceProfile {
       startHour: window.startHour,
       endHour: window.endHour,
     })),
-    dncRegistries: rule?.dncRegistries ?? ['internal'],
+    dncRegistries: rule.dncRegistries,
     maxAttemptsPerLead: 3,
     // GDPR data-minimisation pushes retention down in the EU.
     retentionDays: isEu(cc) ? 90 : 365,
     piiRedaction: true,
-    requireConsentProof: rule?.requireConsentProof ?? true,
+    requireConsentProof: rule.requireConsentProof,
     // NEVER default-on. docs/14 §5: claiming HIPAA readiness without a signed BAA
     // on every sub-processor is a misrepresentation, so this is opt-in only and
     // gated behind an explicit contractual step.
@@ -195,13 +424,44 @@ function defaultDisclosureText(country: string): Record<string, string> {
 
 export interface DispatchContext {
   profile: ComplianceProfile;
+  /**
+   * The rules binding THIS callee, resolved from their country (and US state).
+   * Every rule below reads this rather than `profile` — the profile describes the
+   * workspace, and the workspace is not who is being called.
+   */
+  rule: EffectiveRule;
   /** ISO country of the number being called. */
   calleeCountry: string;
   /** US state, when known — drives two-party consent. */
   calleeState?: string;
-  /** Local time at the callee, as {dayOfWeek, hour}. */
+  /** Local time at the callee, as {dayOfWeek, hour}. Used for display and the audit. */
   calleeLocalTime: { dayOfWeek: number; hour: number };
+  /**
+   * Every zone the callee might be in, when the country spans more than one and the
+   * lead does not say which. More than one entry means the window must be open in
+   * ALL of them — a number that might be in Los Angeles cannot be dialled at 08:00
+   * New York time, because for that person it is 05:00.
+   */
+  calleeZonedTimes?: ReadonlyArray<{ zone: string; dayOfWeek: number; hour: number }>;
+  /**
+   * The public holiday falling on the callee's own calendar date, if any. Recorded
+   * whether or not it blocks — "we called them on Christmas Day" is worth being able
+   * to answer even where it was lawful.
+   */
+  calleeHoliday?: string | null;
   onDncList: boolean;
+  /**
+   * Registries this callee's country requires that nothing could query — no
+   * integration configured, or the lookup failed. Empty means fully screened.
+   */
+  dncUnavailable?: readonly string[];
+  /**
+   * Whether an unscreenable number is refused. Fails closed by default: a statutory
+   * screening obligation you cannot discharge is a reason not to dial, not a
+   * formality to note. Deployments without registry integrations set this false and
+   * accept the recorded gap.
+   */
+  requireDncScreening?: boolean;
   attemptsSoFar: number;
   hasConsentProof: boolean;
   isOutbound: boolean;
@@ -252,26 +512,66 @@ export function buildComplianceChain(): HandlerChain<DispatchDecision, DispatchC
       ),
     )
     .use(
+      rule('dnc_screening', 'Screening coverage', (ctx) => {
+        const missing = ctx.dncUnavailable ?? [];
+        if (!ctx.isOutbound || missing.length === 0) return null;
+        // Ordered AFTER `dnc`: a confirmed hit is the more specific answer, and
+        // reporting "could not screen" over a number we know is listed would be a
+        // worse explanation of the same refusal.
+        if (ctx.requireDncScreening === false) return null;
+        return `cannot screen ${missing.join(', ')} for ${ctx.rule.country} — no registry integration configured`;
+      }),
+    )
+    .use(
       rule('attempts', 'Attempt cap', (ctx) =>
-        ctx.attemptsSoFar >= ctx.profile.maxAttemptsPerLead
-          ? `attempt cap reached (${ctx.profile.maxAttemptsPerLead})`
+        ctx.attemptsSoFar >= ctx.rule.maxAttemptsPerLead
+          ? `attempt cap reached (${ctx.rule.maxAttemptsPerLead})`
           : null,
       ),
     )
     .use(
       rule('calling_window', 'Calling window (callee local time)', (ctx) => {
-        if (!ctx.isOutbound || !ctx.profile.callingWindows.length) return null;
+        if (!ctx.isOutbound || !ctx.rule.callingWindows.length) return null;
+
+        const isOpen = (dayOfWeek: number, hour: number) =>
+          ctx.rule.callingWindows.some(
+            (w) => w.dayOfWeek === dayOfWeek && hour >= w.startHour && hour < w.endHour,
+          );
+
+        // Ambiguous zone → every candidate must be open. The first CLOSED one is
+        // the reason, because that is the person who would have been woken up.
+        const candidates = ctx.calleeZonedTimes ?? [];
+        if (candidates.length > 1) {
+          const shut = candidates.find((z) => !isOpen(z.dayOfWeek, z.hour));
+          if (!shut) return null;
+          return (
+            `outside ${ctx.rule.country} calling window in ${shut.zone} ` +
+            `(local ${shut.hour}:00, day ${shut.dayOfWeek}) — the lead carries no timezone, ` +
+            `so every zone the country spans must be open`
+          );
+        }
+
         const { dayOfWeek, hour } = ctx.calleeLocalTime;
-        const open = ctx.profile.callingWindows.some(
-          (w) => w.dayOfWeek === dayOfWeek && hour >= w.startHour && hour < w.endHour,
-        );
-        return open ? null : `outside permitted calling window (local ${hour}:00, day ${dayOfWeek})`;
+        if (isOpen(dayOfWeek, hour)) return null;
+        // Name the country: "outside the window" is confusing on a multi-country
+        // campaign until you know WHOSE window was applied.
+        return `outside ${ctx.rule.country} calling window (local ${hour}:00, day ${dayOfWeek})`;
+      }),
+    )
+    .use(
+      rule('public_holiday', 'Public holiday in the callee’s country', (ctx) => {
+        if (!ctx.isOutbound || !ctx.calleeHoliday) return null;
+        // Only blocks where the ruleset says this country restricts it. The dates
+        // are known for every supported country; the prohibition is not ours to
+        // assert, so an unset policy means the holiday is recorded and allowed.
+        if (ctx.rule.holidayCalling !== 'restricted') return null;
+        return `${ctx.calleeHoliday} is a public holiday in ${ctx.rule.country}, where calling on holidays is restricted`;
       }),
     )
     .use(
       rule('consent_proof', 'Prior express written consent', (ctx) =>
-        ctx.isOutbound && ctx.profile.requireConsentProof && !ctx.hasConsentProof
-          ? 'no proof of prior express written consent on file'
+        ctx.isOutbound && ctx.rule.requireConsentProof && !ctx.hasConsentProof
+          ? `no proof of prior express written consent on file (required for ${ctx.rule.country})`
           : null,
       ),
     );

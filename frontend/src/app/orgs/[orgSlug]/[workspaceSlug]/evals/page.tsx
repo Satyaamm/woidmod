@@ -283,7 +283,11 @@ function EvalsInner() {
                         description="A suite is a set of simulated calls with assertions — did it call the right tool with the right arguments, did it stay formal, did it escalate. Run it before every publish and a regression stops being something a customer finds."
                         action={
                           canWrite && (
-                            <Button type="primary" icon={<PlusOutlined />}>
+                            <Button
+                              type="primary"
+                              icon={<PlusOutlined />}
+                              onClick={() => setNewSuiteOpen(true)}
+                            >
                               Create a suite
                             </Button>
                           )
@@ -389,6 +393,7 @@ function EvalsInner() {
           onChange={(e) => setNewSuiteName(e.target.value)}
           onPressEnter={(e) => e.preventDefault()}
           autoFocus
+          autoComplete="off"
         />
       </Modal>
     </>

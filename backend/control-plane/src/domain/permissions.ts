@@ -4,7 +4,7 @@
  * The previous model was a hardcoded `Record<Role, Permission[]>` with four fixed
  * org roles and four fixed workspace roles. That is fine until the first customer
  * says "our QA contractors may listen to calls but must never see phone numbers,
- * and only for the Acme brand" — which is a normal enterprise request and
+ * and only for one brand" — which is a normal enterprise request and
  * unrepresentable with fixed roles.
  *
  * This module adds three things without changing how callers check permissions:
@@ -15,7 +15,7 @@
  *   2. **Custom roles**: a tenant may define its own role as a set of permissions,
  *      bounded by what the built-in roles allow (see `MAX_GRANTABLE`).
  *   3. **Resource scoping**: a grant may be narrowed to specific agents or numbers,
- *      so "analyst on the Acme brand only" is expressible.
+ *      so "analyst on one brand only" is expressible.
  *
  * `authorize()` in tenant.ts remains the only producer of a TenantScope. Nothing
  * here weakens that.

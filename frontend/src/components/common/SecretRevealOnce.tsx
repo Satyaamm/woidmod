@@ -74,6 +74,7 @@ export function SecretRevealOnce({
         autoSize={{ minRows: 2, maxRows: 5 }}
         style={{ fontFamily: token.fontFamilyCode, fontSize: 12 }}
         aria-label="Secret value"
+        autoComplete="off"
       />
 
       <Flex gap={8} style={{ margin: '12px 0' }} wrap>

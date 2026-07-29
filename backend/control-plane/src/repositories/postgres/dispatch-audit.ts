@@ -44,6 +44,8 @@ function toRow(entry: DispatchAuditEntry): NewDispatchAuditRow {
     hadConsentProof: entry.hadConsentProof,
     consentProofRef: entry.consentProofRef,
     profileSnapshot: entry.profileSnapshot as NewDispatchAuditRow['profileSnapshot'],
+    rulesetVersion: entry.rulesetVersion ?? null,
+    ruleSnapshot: entry.ruleSnapshot ?? null,
   };
 }
 
@@ -68,6 +70,8 @@ function rowToEntry(row: DispatchAuditRow): DispatchAuditEntry {
     hadConsentProof: row.hadConsentProof,
     consentProofRef: row.consentProofRef,
     profileSnapshot: row.profileSnapshot,
+    rulesetVersion: row.rulesetVersion,
+    ruleSnapshot: row.ruleSnapshot,
   };
 }
 

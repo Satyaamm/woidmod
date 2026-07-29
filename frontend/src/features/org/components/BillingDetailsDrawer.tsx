@@ -104,7 +104,7 @@ export function BillingDetailsDrawer({
           extra={`Not the display name. For "${org.name}" this is usually the full registered entity.`}
           rules={[{ required: true, message: 'The invoice needs a legal entity name' }]}
         >
-          <Input placeholder="Registered legal entity name" />
+          <Input placeholder="Registered legal entity name" autoComplete="organization" />
         </Form.Item>
 
         <Row gutter={12}>
@@ -124,7 +124,7 @@ export function BillingDetailsDrawer({
               label={label}
               extra={`Shown on the invoice as your ${label}. Leave blank if you have none.`}
             >
-              <Input placeholder={label === 'EIN' ? '12-3456789' : 'DE123456789'} />
+              <Input placeholder={label === 'EIN' ? '12-3456789' : 'DE123456789'} autoComplete="off" />
             </Form.Item>
           </Col>
         </Row>
@@ -135,7 +135,7 @@ export function BillingDetailsDrawer({
           rules={[{ type: 'email', message: 'That does not look like an email address' }]}
           extra="Where invoices and dunning notices go. Often accounts-payable, not you."
         >
-          <Input placeholder="billing@example.com" />
+          <Input placeholder="billing@example.com" autoComplete="email" />
         </Form.Item>
 
         <Typography.Title level={5} style={{ marginTop: 8 }}>

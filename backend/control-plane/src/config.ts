@@ -34,7 +34,7 @@ const envSchema = z.object({
   REGION: z.string().default('us-east'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   // Off by default: no demo orgs. A real user signs up and provisions their own
-  // org/workspace. Set SEED=1 only if you want the Contoso/Globex sample tenants.
+  // org/workspace. Set SEED=1 only if you want the two placeholder sample tenants.
   SEED: bool(false),
 
   // -- Persistence -----------------------------------------------------------
@@ -50,6 +50,26 @@ const envSchema = z.object({
   AUTH_HASH_PEPPER: z.string().min(16).optional(),
   // Local dev only: return the email-verification code in the signup response.
   AUTH_EXPOSE_CODES: bool(false),
+
+  // Refuse to dial a number whose statutory DNC registries cannot be screened (no
+  // integration configured, or the lookup failed). Defaults ON: a screening
+  // obligation you cannot discharge is a reason not to call. Set to 0 in a
+  // deployment that has accepted the gap — it is then recorded on every audit row
+  // rather than being invisible.
+  DNC_REQUIRE_SCREENING: bool(true),
+
+  /**
+   * Commercial DNC scrubbing endpoints, one per statutory registry.
+   *
+   *   DNC_REGISTRY_PROVIDERS="us_national_dnc=https://vendor/dnc/{digits}|X-Api-Key: k|result.listed"
+   *
+   * `<registryKey>=<urlTemplate>[|<header>][|<resultPath>]`, semicolon-separated.
+   * Vendor-neutral on purpose: the national registries (FTC, Bloctel, TPS)
+   * distribute FILES rather than APIs, so the query-API half of the market is
+   * commercial resellers who are interchangeable. Registries with no entry stay
+   * `unavailable`, which is the honest state.
+   */
+  DNC_REGISTRY_PROVIDERS: z.string().optional(),
 
   // -- SSO (OAuth 2.0 / OIDC) — optional; a provider is live only when BOTH id+secret set.
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),

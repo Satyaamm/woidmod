@@ -53,6 +53,50 @@ export type WorkspacePatch = Partial<
   spendCaps?: Partial<SpendCaps>;
 };
 
+/** One country's rule as the control plane holds it, with its review provenance. */
+export interface LiveJurisdictionRule {
+  country: string;
+  version: number;
+  /** null = never reviewed by counsel. Surfaced, never hidden. */
+  reviewedAt: string | null;
+  source: string;
+  consentModel: 'one_party' | 'two_party';
+  aiDisclosureRequired: boolean;
+  callingWindow: { startHour: number; endHour: number };
+  dncRegistries: string[];
+  requireConsentProof: boolean;
+  notes: string;
+}
+
+export interface JurisdictionRuleset {
+  version: string;
+  /** True when the stored ruleset could not be loaded and the build's copy is serving. */
+  builtInFallback: boolean;
+  unreviewedCountries: string[];
+  items: LiveJurisdictionRule[];
+}
+
+export interface PreflightResult {
+  allowed: boolean;
+  reason: string;
+  country: string | null;
+  countryConfidence: 'exact' | 'inferred' | 'unknown';
+  countryNote: string | null;
+  calleeLocalTime: { dayOfWeek: number; hour: number };
+  rulesApplied: Array<{ key: string; action: string; reason: string }>;
+  rule: {
+    consentModel: 'one_party' | 'two_party';
+    aiDisclosureRequired: boolean;
+    callingWindows: Array<{ dayOfWeek: number; startHour: number; endHour: number }>;
+    dncRegistries: string[];
+    requireConsentProof: boolean;
+    unknownCountry: boolean;
+    reviewedAt: string | null;
+    rulesetVersion: string;
+    provenance: Record<string, string[]>;
+  };
+}
+
 export const settingsApi = {
   get: async (workspaceId: string): Promise<Workspace> =>
     (await http.get<Workspace>(`/workspaces/${workspaceId}`, scoped(workspaceId))).data,
@@ -77,4 +121,24 @@ export const settingsApi = {
   subprocessors: async (workspaceId: string): Promise<SubprocessorEntry[]> =>
     (await http.get<{ items: SubprocessorEntry[] }>('/compliance/subprocessors', scoped(workspaceId)))
       .data.items,
+
+  /**
+   * The per-country rules the dispatch gate actually resolves against.
+   *
+   * This is why the local copy in `jurisdictions.ts` is a fallback rather than the
+   * source: rules now live in the database and can be amended by counsel without a
+   * deploy, so anything hard-coded in the bundle will eventually be a lie.
+   */
+  jurisdictions: async (workspaceId: string): Promise<JurisdictionRuleset> =>
+    (await http.get<JurisdictionRuleset>('/compliance/jurisdictions', scoped(workspaceId))).data,
+
+  /**
+   * "Would this call go through?" — runs the real chain, dials nothing, records
+   * nothing.
+   */
+  preflight: async (
+    workspaceId: string,
+    body: { toNumber: string; at?: string },
+  ): Promise<PreflightResult> =>
+    (await http.post<PreflightResult>('/compliance/preflight', body, scoped(workspaceId))).data,
 };

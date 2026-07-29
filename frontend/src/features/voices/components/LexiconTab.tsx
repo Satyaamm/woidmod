@@ -112,6 +112,7 @@ export function LexiconTab({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           style={{ width: 260 }}
+          autoComplete="off"
         />
         <Space size={8}>
           {saved && (

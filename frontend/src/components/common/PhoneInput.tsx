@@ -90,6 +90,9 @@ export function PhoneInput({
         style={{ width: '100%' }}
         value={number}
         inputMode="tel"
+        // The country code is the sibling Select, so this half is the national
+        // number — `tel-national`, not `tel`, or the browser fills the dial code twice.
+        autoComplete="tel-national"
         placeholder="Phone number"
         onChange={(e) => {
           const digits = e.target.value.replace(/\D/g, '');

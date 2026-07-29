@@ -13,10 +13,12 @@ import {
   type Organization,
 } from '../../domain/schemas.js';
 import { orgDetailsInput } from '../../domain/auth-schemas.js';
-import { require_, requireWorkspace } from '../../domain/tenant.js';
+import { require_, requireWorkspace, type TenantScope } from '../../domain/tenant.js';
 import { NotFoundError } from '../../repositories/types.js';
 import { taxIdLabelFor } from '../../services/compliance.js';
-import { buildBillingAccount, buildUsageSummary } from '../../services/billing.js';
+import { buildBillingAccount, buildUsageSummary, type UsageCall } from '../../services/billing.js';
+import { catalogEntry } from '../../providers/catalog.js';
+import { ttsFactories } from '../../providers/factories/speech.js';
 import { z } from 'zod';
 
 /** Body for PUT /workspaces/:id/lexicon — the client strips its row `id` before sending. */
@@ -96,6 +98,33 @@ function buildOverview(calls: Array<Awaited<ReturnType<Container['services']['ca
   };
 }
 
+/**
+ * Every call the caller can see, across the org.
+ *
+ * Billing and usage are org-level questions, but the call repository is
+ * workspace-scoped by design — there is deliberately no cross-tenant read on it.
+ * So the workspaces are walked one at a time and a workspace the caller cannot
+ * read simply contributes nothing, rather than failing the whole summary.
+ */
+async function orgCalls(container: Container, scope: TenantScope): Promise<UsageCall[]> {
+  const workspaces = await container.services.workspaces.list(scope, { pageSize: 100 });
+  const calls: UsageCall[] = [];
+  for (const workspace of workspaces.items) {
+    try {
+      const page = await container.repositories.calls.list(
+        { ...scope, workspaceId: workspace.id } as Parameters<
+          Container['repositories']['calls']['list']
+        >[0],
+        { page: 1, pageSize: 1000 },
+      );
+      calls.push(...page.items);
+    } catch {
+      /* not readable by this caller — skip */
+    }
+  }
+  return calls;
+}
+
 export function workspaceRoutes(container: Container) {
   const app = new Hono<ApiEnv>();
 
@@ -123,7 +152,7 @@ export function workspaceRoutes(container: Container) {
     require_(scope, 'org:billing');
     const org = await container.repositories.orgs.get(scope);
     if (!org) throw new NotFoundError('organization', scope.orgId);
-    return c.json(buildBillingAccount(org));
+    return c.json(buildBillingAccount(org, await orgCalls(container, scope)));
   });
 
   /** Usage summary for the current billing period, aggregated across workspaces. */
@@ -133,7 +162,7 @@ export function workspaceRoutes(container: Container) {
     const org = await container.repositories.orgs.get(scope);
     if (!org) throw new NotFoundError('organization', scope.orgId);
     const workspaces = await container.services.workspaces.list(scope, { pageSize: 100 });
-    return c.json(buildUsageSummary(org, workspaces.items));
+    return c.json(buildUsageSummary(org, workspaces.items, await orgCalls(container, scope)));
   });
 
   app.get('/workspaces', async (c) => {
@@ -175,26 +204,84 @@ export function workspaceRoutes(container: Container) {
   // Exposes the TTS voice catalogue and the per-workspace lexicon over HTTP; the
   // call path already consumes both. `workspaces.get` validates the id is in-tenant.
 
-  /** Available TTS voices, aggregated across every registered provider. */
+  /**
+   * The voices THIS workspace can actually use.
+   *
+   * Previously this walked `container.registries.tts`, which only holds providers
+   * whose *platform* credential resolved at boot. On a BYOK deployment that is
+   * none of them, so the endpoint returned an empty list to every customer — even
+   * one who had just connected ElevenLabs — and the dashboard fell back to a
+   * static language table that was identical for everybody.
+   *
+   * So the voices are fetched from the workspace's OWN connected providers: for
+   * each TTS credential, build that vendor's adapter with the tenant's decrypted
+   * secret and its routing config, then ask the vendor for its voice list. This
+   * is the "build a provider from a single credential" path the verification work
+   * needed too.
+   *
+   * Per-provider failures are reported, not swallowed: a revoked ElevenLabs key
+   * should say so here rather than silently shrinking the list and leaving the
+   * customer to wonder where their voices went.
+   */
   app.get('/workspaces/:id/voices', async (c) => {
     const scope = c.get('scope');
     require_(scope, 'agent:read');
-    await container.services.workspaces.get(scope, c.req.param('id'));
+    const workspace = await container.services.workspaces.get(scope, c.req.param('id'));
     const language = new URL(c.req.url).searchParams.get('language') ?? undefined;
+
     const voices: Array<{
       id: string;
       name: string;
       language: string;
       gender?: string;
       providerKey: string;
+      providerLabel: string;
       preview?: string;
     }> = [];
-    for (const key of container.registries.tts.keys()) {
-      const provider = container.registries.tts.get(key);
-      const list = await provider.listVoices(language);
-      for (const v of list) voices.push({ ...v, providerKey: key });
+    const problems: Array<{ providerKey: string; label: string; reason: string }> = [];
+
+    const credentials = (await container.services.providerCredentials.list(scope)).filter(
+      (cred) => cred.kind === 'tts',
+    );
+    const factories = new Map(ttsFactories().map((f) => [f.key, f]));
+    const secrets = await container.services.providerCredentials.resolverFor(scope);
+
+    for (const cred of credentials) {
+      const factory = factories.get(cred.providerKey);
+      const label = catalogEntry(cred.providerKey)?.label ?? cred.providerKey;
+      if (!factory) {
+        // A vendor the worker runs but the control plane has no in-process
+        // adapter for (Cartesia Ink STT's sibling case). Not an error.
+        continue;
+      }
+      try {
+        const provider = await factory.create(factory.parseConfig(cred.config), {
+          secrets,
+          // The WORKSPACE's data region, not the process's — a US control plane
+          // may well serve an EU-pinned workspace, and the adapter uses this to
+          // pick a regional endpoint.
+          region: workspace.region,
+          logger: container.logger,
+        });
+        for (const v of await provider.listVoices(language)) {
+          voices.push({ ...v, providerKey: cred.providerKey, providerLabel: label });
+        }
+      } catch (error) {
+        problems.push({
+          providerKey: cred.providerKey,
+          label,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    return c.json({ items: voices });
+
+    return c.json({
+      items: voices,
+      /** Providers that failed to answer — surfaced so the UI can say which. */
+      problems,
+      /** How many TTS providers this workspace has connected at all. */
+      connectedProviders: credentials.length,
+    });
   });
 
   /**

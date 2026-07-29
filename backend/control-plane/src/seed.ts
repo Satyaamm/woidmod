@@ -26,13 +26,13 @@ export interface SeedResult {
   }>;
 }
 
-// Generic, recognizable placeholder companies (Contoso/Globex) so the seeded
-// demo reads like real, properly-named accounts — not "Acme Eu / Founder". The
-// org name and person name are DERIVED from these by the real signup path, so
-// clean inputs here mean clean derived names in the dashboard.
+// Neutral placeholder domains — no invented brand names anywhere in the product.
+// Two distinct domains, not one: the org name and slug are DERIVED from the domain
+// by the real signup path, so a shared domain would make both seeded orgs collide
+// on the same name and only differ by a slug suffix.
 const ACCOUNTS = [
-  { email: 'ava.mueller@contoso.example', country: 'DE', timezone: 'Europe/Berlin', locale: 'de-DE' },
-  { email: 'john.rivera@globex.example', country: 'US', timezone: 'America/New_York', locale: 'en-US' },
+  { email: 'first.user@demo-eu.example', country: 'DE', timezone: 'Europe/Berlin', locale: 'de-DE' },
+  { email: 'second.user@demo-us.example', country: 'US', timezone: 'America/New_York', locale: 'en-US' },
 ];
 
 export async function seed(c: Container): Promise<SeedResult> {

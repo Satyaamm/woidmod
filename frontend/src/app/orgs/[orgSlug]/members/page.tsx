@@ -32,7 +32,6 @@ import { PageHeader } from '@/components/common/PageHeader';
 import { PermissionGate, usePermission } from '@/components/common/PermissionGate';
 import { RoleTag } from '@/components/common/StatusTag';
 import { EditMemberAccessDrawer } from '@/features/org/components/EditMemberAccessDrawer';
-import { FixtureNotice } from '@/components/common/FixtureNotice';
 import { InviteMemberDrawer } from '@/features/org/components/InviteMemberDrawer';
 import { useOrgSlug, useQueryState } from '@/features/org/hooks';
 import { ORG_ROLES, workspaceRoleLabel } from '@/features/org/roles';
@@ -256,18 +255,6 @@ function MembersInner() {
         actions={inviteButton}
       />
 
-      <FixtureNotice
-        feature="Membership"
-        endpoints={[
-          'GET /v1/org/members',
-          'PATCH /v1/org/members/:id',
-          'DELETE /v1/org/members/:id',
-          'GET /v1/org/invitations',
-          'POST /v1/org/invitations',
-          'DELETE /v1/org/invitations/:id',
-        ]}
-        works="The workspace list used for per-workspace grants is live."
-      />
 
       <Tabs
         activeKey={tab === 'invitations' ? 'invitations' : 'members'}
@@ -286,6 +273,7 @@ function MembersInner() {
                     defaultValue={search}
                     onChange={(e) => setSearch(e.target.value)}
                     style={{ maxWidth: 260 }}
+                    autoComplete="off"
                   />
                   <Select
                     allowClear

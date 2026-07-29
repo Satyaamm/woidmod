@@ -149,6 +149,7 @@ export function DangerZoneTab({
             placeholder={workspace.name}
             autoFocus
             status={typed && !confirmed ? 'error' : undefined}
+            autoComplete="off"
           />
           {error && <Alert type="error" showIcon message={error} />}
         </Flex>

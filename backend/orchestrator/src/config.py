@@ -67,14 +67,54 @@ class AgentConfig:
     # Which came from the customer vs. the platform — shown in the trace so an
     # operator can see whose key served a call.
     secret_sources: dict[str, str] = field(default_factory=dict)
+    # Non-secret routing per provider key, e.g.
+    #   {"azure-openai-llm": {"resourceName": "acme-eu", "deploymentName": "gpt-4o", ...}}
+    # A key alone is not enough for Azure, Bedrock, Vertex or an OpenAI-compatible
+    # gateway: they also need to be told WHERE to send the request. Without this the
+    # worker could authenticate and still have nowhere to go, which is exactly why
+    # those three vendors were previously unreachable.
+    provider_config: dict[str, dict] = field(default_factory=dict)
 
     def secret(self, name: str, env_fallback: str) -> str:
         """BYOK first, platform env second, clear failure third."""
-        value = self.secrets.get(name) or os.getenv(env_fallback, "")
+        value = self.optional_secret(name, env_fallback)
         if not value:
             raise ConfigError(
                 f"no credential for {name}. Add it in the dashboard under "
                 f"Settings -> Providers, or set {env_fallback} for a platform key."
+            )
+        return value
+
+    def optional_secret(self, name: str, env_fallback: str) -> str:
+        """Same lookup, but an absent value is a legitimate answer.
+
+        Used for credentials a vendor treats as optional — Bedrock's STS session
+        token is present for temporary credentials and absent for long-lived IAM
+        keys, and refusing the call in the second case would be wrong.
+        """
+        return self.secrets.get(name) or os.getenv(env_fallback, "")
+
+    def cfg(
+        self, provider_key: str, field_name: str, env_fallback: str = "", default: str = ""
+    ) -> str:
+        """Non-secret routing for a provider — resource name, region, deployment.
+
+        Falls back to a platform env var and then a default, mirroring `secret()`,
+        so a single-tenant deployment can still be configured entirely from `.env`.
+        """
+        value = str(self.provider_config.get(provider_key, {}).get(field_name) or "").strip()
+        if not value and env_fallback:
+            value = os.getenv(env_fallback, "").strip()
+        return value or default
+
+    def require_cfg(self, provider_key: str, field_name: str, env_fallback: str = "") -> str:
+        """`cfg`, but a missing value is a call-stopping error with a fix in it."""
+        value = self.cfg(provider_key, field_name, env_fallback)
+        if not value:
+            raise ConfigError(
+                f'"{field_name}" is required for {provider_key} but was not set. '
+                f"Add it to the credential in the dashboard under Settings -> Providers"
+                + (f", or set {env_fallback}." if env_fallback else ".")
             )
         return value
 
@@ -171,6 +211,7 @@ async def fetch_agent_config(
         region=body.get("region", "us-east"),
         secrets=body.get("secrets", {}),
         secret_sources=body.get("sources", {}),
+        provider_config=body.get("providerConfig", {}) or {},
         modality=agent.get("modality", "voice"),
         flow=agent.get("flow"),
         knowledge=agent.get("knowledge") or [],

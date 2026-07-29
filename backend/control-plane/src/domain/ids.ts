@@ -27,6 +27,8 @@ export const ID_PREFIXES = {
   invitation: 'inv',
   membership: 'mem',
   tool: 'tool',
+  /** A dispatch decision, not a call: most are recorded because no call happened. */
+  dispatchAudit: 'da',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

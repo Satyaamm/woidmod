@@ -221,6 +221,7 @@ function SuiteInner() {
                           value={suite.defaultIterations}
                           disabled={!canWrite}
                           style={{ width: 70 }}
+                          autoComplete="off"
                         />
                       </Flex>
                       <Typography.Text type="secondary" style={{ fontSize: 11 }}>

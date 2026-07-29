@@ -151,6 +151,7 @@ export function SpendCapsTab({
                 onChange={(v) => patch({ monthlyUsd: v ?? null })}
                 style={{ width: '100%', marginTop: 4 }}
                 placeholder="No cap"
+                autoComplete="off"
               />
             </Col>
             <Col xs={24} md={8}>
@@ -166,6 +167,7 @@ export function SpendCapsTab({
                 onChange={(v) => patch({ dailyUsd: v ?? null })}
                 style={{ width: '100%', marginTop: 4 }}
                 placeholder="No cap"
+                autoComplete="off"
               />
             </Col>
             <Col xs={24} md={8}>
@@ -181,6 +183,7 @@ export function SpendCapsTab({
                 onChange={(v) => patch({ perCallUsd: v ?? null })}
                 style={{ width: '100%', marginTop: 4 }}
                 placeholder="No cap"
+                autoComplete="off"
               />
               <span className={styles.hint}>
                 Catches the single stuck call that never hangs up.

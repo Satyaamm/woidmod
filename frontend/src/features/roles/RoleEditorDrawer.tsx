@@ -164,7 +164,7 @@ export function RoleEditorDrawer({
           label="Description"
           extra="One line on what this role is for — it shows next to the role everywhere it's assigned."
         >
-          <Input.TextArea rows={2} placeholder="What can someone with this role do?" />
+          <Input.TextArea rows={2} placeholder="What can someone with this role do?" autoComplete="off" />
         </Form.Item>
       </Form>
 

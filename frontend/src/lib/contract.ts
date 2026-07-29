@@ -441,6 +441,17 @@ export interface ToolConfig {
   parameters: Record<string, unknown>;
 }
 
+/** `POST /v1/agents` — mirrors `createAgentInput` in the control plane's schemas. */
+export interface CreateAgentInput {
+  name: string;
+  description?: string;
+  language?: string;
+  prompt: string;
+  modality?: AgentModality;
+  voice?: Partial<VoiceConfig>;
+  pipeline?: Partial<PipelineConfig>;
+}
+
 export interface AgentVersion {
   id: string;
   agentId: string;
@@ -554,6 +565,12 @@ export interface ProviderOption {
   value: string;
   label: string;
   metadata: Record<string, unknown>;
+  /** This workspace holds a BYOK credential for it. Absent on non-provider options. */
+  configured?: boolean;
+  /** The call worker can execute it. False = storable, but no live calls. */
+  runnable?: boolean;
+  /** Where to get a key, for the "no key" path. */
+  keyUrl?: string;
 }
 
 export interface PlatformCapabilities {
@@ -1436,6 +1453,31 @@ export interface ProviderCatalogItem {
   secretFields: string[];
   /** One-line hint (where to get the key, what a field means). */
   note?: string;
+  /** Deep link to the page that issues the key. */
+  keyUrl?: string;
+  /** Field names (config or secret) the form may leave blank. */
+  optionalFields?: string[];
+  /** Pre-filled values for fields with a sensible default. */
+  defaults?: Record<string, string>;
+  /** False = storable and testable, but the worker cannot run it on a live call. */
+  runnable: boolean;
+}
+
+/** Result of a live credential check — `POST .../verify` and `POST .../test`. */
+export interface ProviderVerifyResult {
+  status: string;
+  /** `live` = the vendor answered. `structural` = it did not; fields only. */
+  checked: 'structural' | 'live';
+  message: string;
+  /** The vendor's own HTTP status, when there was one. */
+  providerStatus?: number;
+}
+
+/** Unsaved credentials to probe from the add/rotate form. */
+export interface TestCredentialInput {
+  providerKey: string;
+  config?: Record<string, unknown>;
+  secrets: Record<string, string>;
 }
 
 export interface CreateCredentialInput {

@@ -157,7 +157,7 @@ export function CreateWorkspaceDrawer({
           label="Name"
           rules={[{ required: true, message: 'Give the workspace a name' }]}
         >
-          <Input placeholder="Workspace name" autoFocus maxLength={120} />
+          <Input placeholder="Workspace name" autoFocus maxLength={120} autoComplete="off" />
         </Form.Item>
 
         <Form.Item
@@ -176,11 +176,11 @@ export function CreateWorkspaceDrawer({
             },
           ]}
         >
-          <Input addonBefore="/orgs/…/" placeholder={slugify(name ?? '')} maxLength={40} />
+          <Input addonBefore="/orgs/…/" placeholder={slugify(name ?? '')} maxLength={40} autoComplete="off" />
         </Form.Item>
 
         <Form.Item name="description" label="Description">
-          <Input.TextArea rows={2} maxLength={500} placeholder="What this workspace is for (optional)" />
+          <Input.TextArea rows={2} maxLength={500} placeholder="What this workspace is for (optional)" autoComplete="off" />
         </Form.Item>
 
         <Form.Item

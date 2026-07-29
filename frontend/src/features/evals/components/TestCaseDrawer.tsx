@@ -172,7 +172,7 @@ export function TestCaseDrawer({
                     label="Case name"
                     rules={[{ required: true, message: 'Name the case.' }]}
                   >
-                    <Input placeholder="Books a technician appointment" />
+                    <Input placeholder="Books a technician appointment" autoComplete="off" />
                   </Form.Item>
 
                   <Form.Item
@@ -181,7 +181,7 @@ export function TestCaseDrawer({
                     extra="What happens on this call, from the caller's side. This is the setup, not the pass condition."
                     rules={[{ required: true, message: 'Describe the scenario.' }]}
                   >
-                    <Input.TextArea rows={3} placeholder="The caller's internet has been dropping for three days…" />
+                    <Input.TextArea rows={3} placeholder="The caller's internet has been dropping for three days…" autoComplete="off" />
                   </Form.Item>
 
                   <Form.Item
@@ -190,7 +190,7 @@ export function TestCaseDrawer({
                     extra="Plain-language definition of done. Also the default rubric for any LLM-judged assertion."
                     rules={[{ required: true, message: 'Say what "passed" means.' }]}
                   >
-                    <Input.TextArea rows={2} placeholder="An appointment exists for Thursday 10–12 and was read back to the caller." />
+                    <Input.TextArea rows={2} placeholder="An appointment exists for Thursday 10–12 and was read back to the caller." autoComplete="off" />
                   </Form.Item>
 
                   <Typography.Text strong style={{ fontSize: 12 }}>
@@ -203,10 +203,10 @@ export function TestCaseDrawer({
 
                   <Flex gap={10} wrap>
                     <Form.Item name="personaName" label="Persona" style={{ minWidth: 200, flex: 1 }}>
-                      <Input placeholder="Herr Brandt, 61" />
+                      <Input placeholder="Herr Brandt, 61" autoComplete="off" />
                     </Form.Item>
                     <Form.Item name="language" label="Language" style={{ width: 120 }}>
-                      <Input placeholder="de-DE" />
+                      <Input placeholder="de-DE" autoComplete="off" />
                     </Form.Item>
                     <Form.Item
                       name="register"
@@ -233,6 +233,7 @@ export function TestCaseDrawer({
                     <Input.TextArea
                       rows={4}
                       placeholder="You are a long-standing customer, polite and a little formal. You address people with Sie…"
+                      autoComplete="off"
                     />
                   </Form.Item>
 
@@ -247,7 +248,7 @@ export function TestCaseDrawer({
 
                   <Flex gap={20} wrap style={{ marginTop: 16 }}>
                     <Form.Item name="maxTurns" label="Max turns" extra="The simulation gives up after this.">
-                      <InputNumber min={4} max={80} style={{ width: 110 }} />
+                      <InputNumber min={4} max={80} style={{ width: 110 }} autoComplete="off" />
                     </Form.Item>
                     <Form.Item name="enabled" label="Included in runs" valuePropName="checked">
                       <Switch />
@@ -303,6 +304,7 @@ export function TestCaseDrawer({
                           onChange={(v) =>
                             setMocks(mocks.map((m, j) => (j === i ? { ...m, latencyMs: v ?? 0 } : m)))
                           }
+                          autoComplete="off"
                         />
                         <Select
                           size="small"

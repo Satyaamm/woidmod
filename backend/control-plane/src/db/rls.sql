@@ -181,9 +181,9 @@ CREATE POLICY organizations_child_read ON organizations
 -- Discovery — the chicken-and-egg case.
 --
 -- `OrganizationRepository.findBySlug` and `.findByVerifiedDomain` take no scope,
--- because they are how a scope is DISCOVERED: a user opens /orgs/acme, or signs
--- up with alice@acme.com and we need to know whether some org has verified
--- acme.com (docs/11 §5). At that moment there is no tenant to set.
+-- because they are how a scope is DISCOVERED: a user opens /orgs/your-org, or signs
+-- up with alice@example.com and we need to know whether some org has verified
+-- example.com (docs/11 §5). At that moment there is no tenant to set.
 --
 -- Rather than granting a pre-tenant SELECT on `organizations` — which would let
 -- any authenticated request enumerate every customer's billing address — these
@@ -316,10 +316,27 @@ CREATE POLICY users_global ON users FOR ALL TO app_user USING (true) WITH CHECK 
 
 
 -- ---------------------------------------------------------------------------
+-- jurisdiction_rules — PLATFORM data, not tenant data.
+--
+-- Every tenant reads the same per-country rules, so there is no org_id to policy
+-- on. Read-only to the app: the ruleset is amended by counsel through a migration
+-- or an ops session, never by a request. RLS stays enabled so the table appears in
+-- a `pg_policies` audit as a considered decision.
+-- ---------------------------------------------------------------------------
+ALTER TABLE jurisdiction_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jurisdiction_rules FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS jurisdiction_rules_global ON jurisdiction_rules;
+CREATE POLICY jurisdiction_rules_global ON jurisdiction_rules FOR SELECT TO app_user USING (true);
+
+
+-- ---------------------------------------------------------------------------
 -- Grants. The privilege model and the policy model are independent: a policy can
 -- only narrow what a GRANT already allows.
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO app_user;
+
+-- Read-only: the app resolves rules, it never writes them.
+GRANT SELECT ON jurisdiction_rules TO app_user;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   users, organizations, workspaces, org_memberships, workspace_memberships,

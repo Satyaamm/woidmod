@@ -43,7 +43,7 @@ export const modeSchema = z.enum(['test', 'live']);
  *
  * The reserved-word check is the routing-collision guard described in
  * `domain/reserved-slugs.ts`: a workspace slug occupies the same URL position as any
- * org-level route, so `/orgs/acme/settings` must not be ambiguous.
+ * org-level route, so `/orgs/your-org/settings` must not be ambiguous.
  */
 function slugSchema(kind: SlugKind) {
   return z

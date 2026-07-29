@@ -141,7 +141,7 @@ export const userDetailsInput = z
 
 export const orgBillingDetailsInput = z
   .object({
-    /** "Acme Technologies GmbH" — what the invoice says, vs `name` which is what the UI says. */
+    /** "Example Technologies GmbH" — what the invoice says, vs `name` which is what the UI says. */
     legalName: z.string().trim().min(1).max(200).optional(),
     address: postalAddressSchema.optional(),
     /** GSTIN / VAT / EIN — the label follows the country, see compliance.taxIdLabelFor. */

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Alert, Button, Flex, Input, Typography } from 'antd';
 import { authApi, sessionApi } from '@/lib/api';
@@ -26,7 +26,16 @@ function VerifyEmailInner() {
     return () => clearTimeout(id);
   }, [cooldown]);
 
+  // A code is single-use: the service consumes it on the first success, so a second
+  // call — the button clicked after the 6th digit already auto-submitted, or a double
+  // tap — comes back "no verification code outstanding" and flashes a bogus error over
+  // a signup that actually worked. `submitting` can't gate that (setState is async, and
+  // it flips back to false while the router is still navigating); a ref can.
+  const inFlight = useRef(false);
+
   const submit = async (value: string) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setSubmitting(true);
     setError(null);
     try {
@@ -46,6 +55,9 @@ function VerifyEmailInner() {
       else if (org) router.push(`/orgs/${org.slug}/workspaces`);
       else router.push('/login');
     } catch (err) {
+      // Only a failed attempt reopens the gate — a success is followed by navigation,
+      // so nothing should be able to fire a second call behind it.
+      inFlight.current = false;
       setError((err as Error).message);
       setCode('');
     } finally {
@@ -57,6 +69,9 @@ function VerifyEmailInner() {
     setCooldown(RESEND_SECONDS);
     try {
       await authApi.resendCode(email);
+      inFlight.current = false; // a fresh code deserves a fresh attempt
+      setError(null);
+      setCode('');
     } catch (err) {
       setError((err as Error).message);
     }
@@ -68,7 +83,7 @@ function VerifyEmailInner() {
       subtitle={
         <>
           We sent a 6-digit code to <Typography.Text strong>{email || 'your inbox'}</Typography.Text>. It
-          expires in 10 minutes.
+          expires in 15 minutes.
         </>
       }
     >

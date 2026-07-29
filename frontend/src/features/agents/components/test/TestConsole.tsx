@@ -547,6 +547,7 @@ export function TestConsole({ agent, onAgentChange }: { agent: Agent; onAgentCha
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           autoSize={{ minRows: 4, maxRows: 12 }}
+          autoComplete="off"
         />
         <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>
           Save &amp; test is the inner loop: the edit is persisted and a fresh session starts against it —

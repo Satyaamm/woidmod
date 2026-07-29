@@ -17,6 +17,15 @@ import {
   type Agent,
   type CreateAgentInput,
 } from '../domain/schemas.js';
+import type { Call } from '../domain/call-schemas.js';
+import type { CallRepository } from '../repositories/call-repository.js';
+
+/** Nearest-rank percentile. Empty input is 0, not NaN — this renders in a table. */
+function percentile(values: number[], p: number): number {
+  const sorted = values.filter((n) => n > 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0;
+}
 
 type UpdateAgentInput = z.infer<typeof updateAgentInput>;
 import { require_, type WorkspaceScope } from '../domain/tenant.js';
@@ -75,18 +84,101 @@ export class AgentService {
   constructor(
     private readonly agents: AgentRepository,
     private readonly workspaces: WorkspaceRepository,
+    /**
+     * Calls, for per-agent statistics.
+     *
+     * Optional so existing constructions (tests, the simulator) keep working —
+     * without it, stats stay at the stored zeros rather than throwing.
+     */
+    private readonly calls?: CallRepository,
   ) {}
 
   async list(scope: WorkspaceScope, opts?: ListOptions) {
     require_(scope, 'agent:read');
-    return this.agents.list(scope, opts);
+    const page = await this.agents.list(scope, opts);
+    return { ...page, items: await this.withStats(scope, page.items) };
   }
 
   async get(scope: WorkspaceScope, agentId: string): Promise<Agent> {
     require_(scope, 'agent:read');
     const agent = await this.agents.get(scope, agentId);
     if (!agent) throw new NotFoundError('agent', agentId);
-    return agent;
+    return (await this.withStats(scope, [agent]))[0] ?? agent;
+  }
+
+  /**
+   * Per-agent statistics, computed from the call log.
+   *
+   * `agent.stats` is written as zeros by `create` and nothing has ever updated
+   * it — so "Calls today", "Success", "p50", "p95" and "Cost / call" were five
+   * columns of `0` in the agent list and six zeroed cards on the agent page,
+   * for every agent, forever. They looked like metrics and were a struct literal.
+   *
+   * They are derived here instead of denormalised onto the agent row: a counter
+   * maintained on write has to be right on every path that touches a call
+   * (ingest, retry, cancel, backfill) and is silently wrong the moment one
+   * forgets. Reading the log cannot drift.
+   *
+   * Scoped to the caller's mode, so a browser rehearsal never inflates the
+   * numbers next to calls that reached real customers — `CallService.list`
+   * applies the same rule.
+   */
+  private async withStats(scope: WorkspaceScope, agents: Agent[]): Promise<Agent[]> {
+    if (!this.calls || agents.length === 0) return agents;
+
+    let calls: Call[];
+    try {
+      // One query for the workspace, then bucketed in memory: N agents would
+      // otherwise mean N queries on a page that already renders a table.
+      const page = await this.calls.list(scope, { page: 1, pageSize: 1000 });
+      calls = page.items;
+    } catch {
+      // Statistics must never take down the agent list.
+      return agents;
+    }
+
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const startOfDay = midnight.getTime();
+
+    const byAgent = new Map<string, Call[]>();
+    for (const call of calls) {
+      const bucket = byAgent.get(call.agentId);
+      if (bucket) bucket.push(call);
+      else byAgent.set(call.agentId, [call]);
+    }
+
+    return agents.map((agent) => {
+      const mine = byAgent.get(agent.id) ?? [];
+      if (mine.length === 0) return agent;
+
+      const today = mine.filter((k) => new Date(k.startedAt).getTime() >= startOfDay);
+      // "Did it work" is only answerable for calls that ended. Counting a call
+      // still in progress as a failure makes the success rate dip whenever
+      // someone is mid-conversation.
+      const finished = mine.filter(
+        (k) => k.status === 'completed' || k.status === 'failed' || k.status === 'no_answer',
+      );
+      const resolved = finished.filter(
+        (k) => k.status === 'completed' && k.outcome === 'resolved',
+      );
+
+      return {
+        ...agent,
+        stats: {
+          callsToday: today.length,
+          successRate: finished.length ? resolved.length / finished.length : 0,
+          avgLatencyMs: percentile(finished.map((k) => k.medianLatencyMs), 0.5),
+          p95LatencyMs: percentile(finished.map((k) => k.p95LatencyMs), 0.95),
+          avgDurationSec: finished.length
+            ? Math.round(finished.reduce((s, k) => s + k.durationSec, 0) / finished.length)
+            : 0,
+          costPerCallUsd: finished.length
+            ? finished.reduce((s, k) => s + k.costUsd, 0) / finished.length
+            : 0,
+        },
+      };
+    });
   }
 
   async create(scope: WorkspaceScope, input: CreateAgentInput): Promise<Agent> {

@@ -139,6 +139,7 @@ export function DisclosureEditor({ value, onChange, enabled, disabled }: Disclos
                   rows={2}
                   status={empty ? 'warning' : undefined}
                   placeholder="What the agent says at the very start of the call."
+                  autoComplete="off"
                 />
                 {empty && (
                   <Typography.Text type="warning" style={{ fontSize: 12 }}>

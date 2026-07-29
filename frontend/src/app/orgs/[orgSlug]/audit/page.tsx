@@ -192,6 +192,7 @@ function AuditInner() {
           defaultValue={values.q}
           onChange={(e) => setFilters({ q: e.target.value })}
           style={{ maxWidth: 300 }}
+          autoComplete="off"
         />
         <Select
           allowClear

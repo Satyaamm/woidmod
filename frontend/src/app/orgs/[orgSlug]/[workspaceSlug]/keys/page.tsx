@@ -35,7 +35,14 @@ export default function ApiKeysPage() {
   const { message } = App.useApp();
 
   const [creating, setCreating] = useState(false);
-  const [secret, setSecret] = useState<ApiKey | null>(null);
+  /**
+   * The created key AND its plaintext secret.
+   *
+   * `POST /api-keys` returns `{ apiKey, secret }` — the secret is not a field on
+   * `ApiKey` and never will be, because it is not stored. Holding the whole
+   * response is the only way this modal can show it once and then lose it.
+   */
+  const [secret, setSecret] = useState<{ apiKey: ApiKey; secret: string } | null>(null);
   const [saved, setSaved] = useState(false);
   const [form] = Form.useForm<{ name: string; mode: Mode }>();
 
@@ -151,7 +158,7 @@ export default function ApiKeysPage() {
       >
         <Form form={form} layout="vertical" initialValues={{ mode: 'test' }} requiredMark={false}>
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name this key' }]}>
-            <Input placeholder="A name to recognise this key" autoFocus />
+            <Input placeholder="A name to recognise this key" autoFocus autoComplete="off" />
           </Form.Item>
           <Form.Item name="mode" label="Mode">
             <Radio.Group>
@@ -187,10 +194,11 @@ export default function ApiKeysPage() {
           style={{ marginBottom: 14 }}
         />
         <Input.TextArea
-          value={secret?.secret ?? secret?.prefix}
+          value={secret?.secret}
           readOnly
           autoSize
           style={{ fontFamily: 'monospace', fontSize: 12 }}
+          autoComplete="off"
         />
         <Flex gap={8} style={{ margin: '12px 0' }}>
           <Tooltip title="Copy to clipboard">
@@ -211,7 +219,7 @@ export default function ApiKeysPage() {
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
               a.href = url;
-              a.download = `${secret?.name ?? 'api-key'}.txt`;
+              a.download = `${secret?.apiKey.name ?? 'api-key'}.txt`;
               a.click();
               URL.revokeObjectURL(url);
             }}

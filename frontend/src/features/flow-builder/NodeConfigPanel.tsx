@@ -143,6 +143,7 @@ function NodeFields({
               value={str('text')}
               onChange={(e) => onChange({ text: e.target.value || undefined })}
               placeholder="Thanks for calling, how can I help?"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Prompt (LLM turn)" tooltip="An instruction for a prompt-driven turn.">
@@ -151,6 +152,7 @@ function NodeFields({
               value={str('prompt')}
               onChange={(e) => onChange({ prompt: e.target.value || undefined })}
               placeholder="Greet the caller and ask why they’re calling."
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Wait for a reply" valuePropName="checked">
@@ -167,6 +169,7 @@ function NodeFields({
               value={str('slot')}
               onChange={(e) => onChange({ slot: e.target.value })}
               placeholder="orderId"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Prompt" required>
@@ -175,6 +178,7 @@ function NodeFields({
               value={str('prompt')}
               onChange={(e) => onChange({ prompt: e.target.value })}
               placeholder="What’s your order number?"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Validation" tooltip="email, e164, postcode, or regex:…">
@@ -182,6 +186,7 @@ function NodeFields({
               value={str('validation')}
               onChange={(e) => onChange({ validation: e.target.value || undefined })}
               placeholder="email"
+              autoComplete="off"
             />
           </Form.Item>
           <Flex gap={12}>
@@ -195,6 +200,7 @@ function NodeFields({
                 style={{ width: '100%' }}
                 value={num('maxRetries') ?? 3}
                 onChange={(v) => onChange({ maxRetries: v ?? 3 })}
+                autoComplete="off"
               />
             </Form.Item>
           </Flex>
@@ -210,6 +216,7 @@ function NodeFields({
               value={str('resultVar')}
               onChange={(e) => onChange({ resultVar: e.target.value || undefined })}
               placeholder="lookupResult"
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -226,6 +233,7 @@ function NodeFields({
               value={str('queue')}
               onChange={(e) => onChange({ queue: e.target.value || undefined })}
               placeholder="tier-2-support"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Reason">
@@ -233,6 +241,7 @@ function NodeFields({
               autoSize={{ minRows: 2, maxRows: 4 }}
               value={str('reason')}
               onChange={(e) => onChange({ reason: e.target.value || undefined })}
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Carry a conversation summary" valuePropName="checked">
@@ -249,6 +258,7 @@ function NodeFields({
               value={str('reason')}
               onChange={(e) => onChange({ reason: e.target.value || undefined })}
               placeholder="Resolved"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Disposition" tooltip="Written to the call record.">
@@ -256,6 +266,7 @@ function NodeFields({
               value={str('disposition')}
               onChange={(e) => onChange({ disposition: e.target.value || undefined })}
               placeholder="resolved"
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -269,6 +280,7 @@ function NodeFields({
               value={str('amountVar')}
               onChange={(e) => onChange({ amountVar: e.target.value || undefined })}
               placeholder="dueAmount"
+              autoComplete="off"
             />
           </Form.Item>
           <Flex gap={12}>
@@ -278,6 +290,7 @@ function NodeFields({
                 style={{ width: '100%' }}
                 value={num('amountFixedMinor')}
                 onChange={(v) => onChange({ amountFixedMinor: v ?? undefined })}
+                autoComplete="off"
               />
             </Form.Item>
             <Form.Item label="Currency" style={{ width: 110 }} tooltip="ISO 4217, 3 letters.">
@@ -286,6 +299,7 @@ function NodeFields({
                 value={str('currency')}
                 onChange={(e) => onChange({ currency: e.target.value.toUpperCase() || undefined })}
                 placeholder="EUR"
+                autoComplete="off"
               />
             </Form.Item>
           </Flex>
@@ -293,6 +307,7 @@ function NodeFields({
             <Input
               value={str('description')}
               onChange={(e) => onChange({ description: e.target.value || undefined })}
+              autoComplete="off"
             />
           </Form.Item>
           {toolSelect('providerToolId', 'PSP tool', 'The payment service provider tool.')}
@@ -319,6 +334,7 @@ function NodeFields({
               value={str('against')}
               onChange={(e) => onChange({ against: e.target.value || undefined })}
               placeholder="phone"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Max attempts">
@@ -328,6 +344,7 @@ function NodeFields({
               style={{ width: '100%' }}
               value={num('maxAttempts') ?? 3}
               onChange={(v) => onChange({ maxAttempts: v ?? 3 })}
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -345,6 +362,7 @@ function NodeFields({
               style={{ width: '100%' }}
               value={num('durationMin') ?? 30}
               onChange={(v) => onChange({ durationMin: v ?? 30 })}
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Slot variable" tooltip="Var for the chosen slot / booking id.">
@@ -352,6 +370,7 @@ function NodeFields({
               value={str('slotVar')}
               onChange={(e) => onChange({ slotVar: e.target.value || undefined })}
               placeholder="bookingId"
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -366,6 +385,7 @@ function NodeFields({
               value={str('prompt')}
               onChange={(e) => onChange({ prompt: e.target.value || undefined })}
               placeholder="Would it help to switch to video so I can see the issue?"
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Require consent" valuePropName="checked">
@@ -393,6 +413,7 @@ function NodeFields({
               value={str('instruction')}
               onChange={(e) => onChange({ instruction: e.target.value })}
               placeholder="Read the serial number on the back of the device."
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Store result in">
@@ -400,6 +421,7 @@ function NodeFields({
               value={str('resultVar')}
               onChange={(e) => onChange({ resultVar: e.target.value || undefined })}
               placeholder="sceneDescription"
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -415,12 +437,14 @@ function NodeFields({
             <Input
               value={str('avatarId')}
               onChange={(e) => onChange({ avatarId: e.target.value || undefined })}
+              autoComplete="off"
             />
           </Form.Item>
           <Form.Item label="Style">
             <Input
               value={str('style')}
               onChange={(e) => onChange({ style: e.target.value || undefined })}
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -444,6 +468,7 @@ function NodeFields({
               value={str('url')}
               onChange={(e) => onChange({ url: e.target.value || undefined })}
               placeholder="https://…"
+              autoComplete="off"
             />
           </Form.Item>
         </>
@@ -503,6 +528,7 @@ function ConditionFields({
               addonBefore="Label"
               value={b.label}
               onChange={(e) => setBranch(i, { label: e.target.value })}
+              autoComplete="off"
             />
             <Input
               size="small"
@@ -510,6 +536,7 @@ function ConditionFields({
               value={b.when}
               onChange={(e) => setBranch(i, { when: e.target.value })}
               placeholder='amount > 100'
+              autoComplete="off"
             />
           </Flex>
         ))}

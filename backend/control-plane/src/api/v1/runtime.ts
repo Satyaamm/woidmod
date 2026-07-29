@@ -27,32 +27,12 @@ import type { Container } from '../../container.js';
 import type { ApiEnv } from '../middleware/index.js';
 import { require_, requireWorkspace } from '../../domain/tenant.js';
 import { requirementsFor, checkEligibility } from '../../compliance/provider-eligibility.js';
-
-/** Maps a provider key to the secret fields its adapter asks for. */
-const SECRET_FIELDS: Record<string, string[]> = {
-  'deepgram-stt': ['deepgram.apiKey'],
-  'assemblyai-stt': ['assemblyai.apiKey'],
-  'azure-speech-stt': ['azure.speech.key'],
-  'speechmatics-stt': ['speechmatics.apiKey'],
-  'soniox-stt': ['soniox.apiKey'],
-  'anthropic-llm': ['anthropic.apiKey'],
-  'openai-llm': ['openai.apiKey'],
-  'gemini-llm': ['gemini.apiKey'],
-  'groq-llm': ['groq.apiKey'],
-  'azure-openai-llm': ['azure.openai.apiKey'],
-  // AWS Bedrock is SigV4 — IAM keys, not an API key. sessionToken is optional (STS).
-  'bedrock-llm': ['bedrock.accessKeyId', 'bedrock.secretAccessKey'],
-  // Google surfaces authenticate with a service-account JSON key.
-  'vertex-llm': ['vertex.serviceAccount'],
-  'google-stt': ['google.serviceAccount'],
-  'google-tts': ['google.serviceAccount'],
-  'cartesia-tts': ['cartesia.apiKey'],
-  'elevenlabs-tts': ['elevenlabs.apiKey'],
-  'azure-tts': ['azure.speech.key'],
-  'openai-tts': ['openai.apiKey'],
-  'playht-tts': ['playht.apiKey', 'playht.userId'],
-  'rime-tts': ['rime.apiKey'],
-};
+import {
+  allSecretFieldNames,
+  catalogEntry,
+  requiredSecretFieldNames,
+} from '../../providers/catalog.js';
+import type { ProviderKind } from '../../services/provider-credentials.js';
 
 export function runtimeRoutes(container: Container) {
   const app = new Hono<ApiEnv>();
@@ -101,14 +81,46 @@ export function runtimeRoutes(container: Container) {
     const missing: string[] = [];
     const sources: Record<string, 'byok' | 'platform'> = {};
 
+    /**
+     * Non-secret routing the worker cannot function without.
+     *
+     * Azure OpenAI routes on resource + deployment + api-version, Bedrock on
+     * region, Vertex on project + location, an OpenAI-compatible gateway on its
+     * base URL. Sending only the key meant the worker could authenticate to a
+     * vendor and still have no idea where to send the request — which is exactly
+     * why Azure, Bedrock and Vertex were never runnable. Keyed by provider key so
+     * the worker can look up `providerConfig['azure-openai-llm'].deploymentName`.
+     *
+     * These are non-secret by construction (the catalog splits `configFields`
+     * from `secretFields`), so they carry none of the exposure the secrets do.
+     */
+    const providerConfig: Record<string, Record<string, unknown>> = {};
+
     for (const providerKey of new Set(wanted)) {
-      for (const field of SECRET_FIELDS[providerKey] ?? []) {
+      const entry = catalogEntry(providerKey);
+      const requiredFields = new Set(requiredSecretFieldNames(providerKey));
+
+      for (const field of allSecretFieldNames(providerKey)) {
         try {
           secrets[field] = await resolver.get(field);
           sources[field] = 'byok';
         } catch {
-          missing.push(field);
+          // An absent OPTIONAL field (Bedrock's STS session token) is a normal
+          // state, not a missing credential — reporting it would refuse a call
+          // that long-lived IAM keys serve perfectly well.
+          if (requiredFields.has(field)) missing.push(field);
         }
+      }
+
+      if (entry) {
+        providerConfig[providerKey] = {
+          ...(entry.defaults ?? {}),
+          ...(await container.services.providerCredentials.configFor(
+            scope,
+            entry.kind as ProviderKind,
+            providerKey,
+          )),
+        };
       }
     }
 
@@ -152,6 +164,8 @@ export function runtimeRoutes(container: Container) {
       },
       secrets,
       sources,
+      /** Non-secret routing per provider key — where to send the authenticated request. */
+      providerConfig,
       /** Non-empty means the worker cannot run this agent — surfaced, not hidden. */
       missing,
       region: workspace.region,

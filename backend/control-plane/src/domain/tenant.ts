@@ -136,7 +136,7 @@ export function authorize(
  *
  * `require_(scope, 'agent:write')` answers "may this person edit agents at all";
  * this answers "may they edit *this* agent". Both are needed for a grant like
- * "developer, but only on the Acme brand" — and forgetting the second is how
+ * "developer, but only on one brand" — and forgetting the second is how
  * resource scoping silently becomes decorative.
  */
 export function requireAgent(scope: TenantScope, agentId: string): void {

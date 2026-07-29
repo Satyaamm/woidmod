@@ -9,6 +9,7 @@ import {
   PlusOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -33,7 +34,6 @@ import { PermissionGate, usePermission } from '@/components/common/PermissionGat
 import { StatTile } from '@/components/common/StatTile';
 import { countryName } from '@/components/common/CountrySelect';
 import { BillingDetailsDrawer } from '@/features/org/components/BillingDetailsDrawer';
-import { FixtureNotice } from '@/components/common/FixtureNotice';
 import { useQueryState } from '@/features/org/hooks';
 import { regionLabel } from '@/features/org/nav';
 import { useAsync } from '@/hooks/useAsync';
@@ -305,7 +305,12 @@ function BillingInner() {
                 }
               />
               <PermissionGate need="org:billing" reason="Only owners and billing admins can do this.">
-                <Button type="primary" icon={<PlusOutlined />}>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  disabled
+                  title="Adding a card needs a connected payment provider (not enabled)."
+                >
                   Add payment method
                 </Button>
               </PermissionGate>
@@ -438,14 +443,18 @@ function BillingInner() {
             title: '',
             key: 'actions',
             width: 110,
+            // Invoice PDFs are rendered by the payment provider, which is not
+            // connected — there is no URL to link to and nothing to generate one
+            // from. Disabled with the reason beats a button that downloads nothing.
             render: (_, inv) => (
-              <Tooltip title={inv.status === 'draft' ? 'Not finalised yet' : 'Download PDF'}>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<DownloadOutlined />}
-                  disabled={inv.status === 'draft' || !canBill}
-                >
+              <Tooltip
+                title={
+                  inv.status === 'draft'
+                    ? 'Not finalised yet'
+                    : 'Invoice PDFs come from the payment provider, which isn’t connected yet.'
+                }
+              >
+                <Button size="small" type="text" icon={<DownloadOutlined />} disabled>
                   PDF
                 </Button>
               </Tooltip>
@@ -463,10 +472,19 @@ function BillingInner() {
         subtitle="Plan, payment method and invoices for the whole organization."
       />
 
-      <FixtureNotice
-        feature="Plan, payment method and invoices"
-        endpoints={['GET /v1/org/billing', 'POST /v1/org/billing/plan', 'POST /v1/org/billing/payment-methods']}
-        works="Billing details — legal name, address and the country-derived tax-ID label — are read live from GET /v1/org."
+      {/*
+        Not a fixture notice any more: `GET /v1/org/billing` is live, and this
+        period's spend and minutes are summed from the real call log. What is
+        genuinely absent is the payment provider — so plan, cards and invoices
+        are empty and their controls are disabled with the reason, rather than
+        the page claiming none of it is saved.
+      */}
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="No payment provider is connected"
+        description="Your plan, saved cards and invoices come from a payment provider this deployment has not been connected to, so those sections are empty and their buttons are disabled. Everything else on this page is live: billing details from your organization, and this period's spend and minutes from your own call log."
       />
 
       <AsyncBoundary

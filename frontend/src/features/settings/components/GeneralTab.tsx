@@ -66,6 +66,7 @@ export function GeneralTab({
               disabled={!canWrite}
               onChange={(e) => patch({ name: e.target.value })}
               style={{ marginTop: 4 }}
+              autoComplete="off"
             />
           </Col>
           <Col xs={24} md={12}>
@@ -78,6 +79,7 @@ export function GeneralTab({
               addonBefore={`/orgs/${orgSlug}/`}
               onChange={(e) => patch({ slug: e.target.value })}
               style={{ marginTop: 4 }}
+              autoComplete="off"
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Unique within the organization. Changing it breaks existing bookmarks and any link
@@ -94,6 +96,7 @@ export function GeneralTab({
               rows={2}
               onChange={(e) => patch({ description: e.target.value })}
               style={{ marginTop: 4 }}
+              autoComplete="off"
             />
           </Col>
         </Row>

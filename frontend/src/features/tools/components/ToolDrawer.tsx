@@ -161,7 +161,7 @@ export function ToolDrawer({
                     },
                   ]}
                 >
-                  <Input placeholder="lookup_customer" />
+                  <Input placeholder="lookup_customer" autoComplete="off" />
                 </Form.Item>
 
                 <Form.Item
@@ -170,7 +170,7 @@ export function ToolDrawer({
                   extra="When to call it, and when not to. The model has nothing else to go on."
                   rules={[{ required: true, message: 'Describe when the model should call this.' }]}
                 >
-                  <Input.TextArea rows={3} placeholder="Look up a customer by phone number. Call before discussing anything account-specific." />
+                  <Input.TextArea rows={3} placeholder="Look up a customer by phone number. Call before discussing anything account-specific." autoComplete="off" />
                 </Form.Item>
 
                 <Flex gap={10} align="flex-start">
@@ -184,7 +184,7 @@ export function ToolDrawer({
                     extra="Path placeholders like {order_number} are filled from the arguments."
                     rules={[{ required: true, message: 'An endpoint is required.' }]}
                   >
-                    <Input placeholder="https://api.example.com/v2/customers/lookup" />
+                    <Input placeholder="https://api.example.com/v2/customers/lookup" autoComplete="off" />
                   </Form.Item>
                 </Flex>
 
@@ -197,7 +197,7 @@ export function ToolDrawer({
                       </Tooltip>
                     }
                   >
-                    <InputNumber min={200} max={30_000} step={100} style={{ width: 140 }} />
+                    <InputNumber min={200} max={30_000} step={100} style={{ width: 140 }} autoComplete="off" />
                   </Form.Item>
                   <Form.Item name="authMode" label="Auth" style={{ width: 180 }}>
                     <Select
@@ -219,7 +219,7 @@ export function ToolDrawer({
                           extra="Stored server-side; never returned to the browser."
                           style={{ minWidth: 200 }}
                         >
-                          <Input placeholder="secret reference" />
+                          <Input placeholder="secret reference" autoComplete="off" />
                         </Form.Item>
                       )
                     }
@@ -231,7 +231,7 @@ export function ToolDrawer({
                   label="Filler phrase"
                   extra="Spoken while the call is in flight, so the caller isn't sitting in silence."
                 >
-                  <Input placeholder="One moment, I'm pulling that up." />
+                  <Input placeholder="One moment, I'm pulling that up." autoComplete="off" />
                 </Form.Item>
 
                 <Typography.Text strong style={{ fontSize: 12 }}>
@@ -243,10 +243,10 @@ export function ToolDrawer({
                       {fields.map((field) => (
                         <Flex key={field.key} gap={6} align="center">
                           <Form.Item name={[field.name, 'key']} noStyle>
-                            <Input size="small" placeholder="Header" style={{ width: 190 }} />
+                            <Input size="small" placeholder="Header" style={{ width: 190 }} autoComplete="off" />
                           </Form.Item>
                           <Form.Item name={[field.name, 'value']} noStyle>
-                            <Input size="small" placeholder="Value" style={{ flex: 1 }} />
+                            <Input size="small" placeholder="Value" style={{ flex: 1 }} autoComplete="off" />
                           </Form.Item>
                           <Form.Item name={[field.name, 'secret']} noStyle valuePropName="checked">
                             <Switch size="small" checkedChildren="secret" unCheckedChildren="plain" />
