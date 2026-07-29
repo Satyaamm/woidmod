@@ -138,9 +138,21 @@ export function geminiLlmFactory(): ProviderFactory<LlmProvider, GeminiConfig> {
 export const azureOpenAiConfigSchema = z
   .object({
     secretName: z.string().min(1).default('azure.openai.apiKey'),
-    /** Azure resource name; the endpoint is derived from it unless baseUrl is set. */
+    /**
+     * Azure resource name. Only usable on the classic host, because the endpoint
+     * derived from it is always `{resourceName}.openai.azure.com` — which an AI
+     * Foundry resource is NOT served from. Prefer `endpoint`.
+     */
     resourceName: z.string().min(1).optional(),
-    /** Full endpoint override, for sovereign clouds and private link. */
+    /**
+     * The full endpoint, exactly as the portal shows it. This is the field the
+     * catalog exposes: Foundry (`{resource}.services.ai.azure.com`), sovereign
+     * clouds (`.azure.us`, `.azure.cn`) and private link cannot be expressed as a
+     * resource name, and deriving a host is how those deployments became
+     * unreachable through this form.
+     */
+    endpoint: z.string().url().optional(),
+    /** Alias kept for configs written before `endpoint` existed. */
     baseUrl: z.string().url().optional(),
     /** Customer's deployment label — Azure routes on this, not on a model id. */
     deploymentName: z.string().min(1),
@@ -158,15 +170,32 @@ export const azureOpenAiConfigSchema = z
     authMode: z.enum(['apiKey', 'entraId']).default('apiKey'),
     usePromptCacheKey: z.boolean().default(true),
   })
-  .refine((c) => Boolean(c.baseUrl ?? c.resourceName), {
-    message: 'azure-openai: one of resourceName or baseUrl is required',
-    path: ['resourceName'],
+  .refine((c) => Boolean(c.endpoint ?? c.baseUrl ?? c.resourceName), {
+    message:
+      'azure-openai: paste the endpoint from the portal ' +
+      '(https://<resource>.services.ai.azure.com for AI Foundry, ' +
+      'https://<resource>.openai.azure.com for Azure OpenAI), or give a resource name ' +
+      'if you are on the classic host',
+    path: ['endpoint'],
   });
 
 export type AzureOpenAiConfig = z.infer<typeof azureOpenAiConfigSchema>;
 
+/**
+ * An explicit endpoint wins; a resource name is only a shorthand for the classic
+ * host. With neither, this THROWS rather than building a URL from `undefined` —
+ * `https://undefined.openai.azure.com` fails as DNS, which reads as a network
+ * problem and sends the customer looking in the wrong place entirely.
+ */
 function azureBaseUrl(config: AzureOpenAiConfig): string {
-  return config.baseUrl ?? `https://${config.resourceName}.openai.azure.com`;
+  const explicit = config.endpoint ?? config.baseUrl;
+  if (explicit) return explicit.replace(/\/+$/, '');
+  if (config.resourceName) return `https://${config.resourceName}.openai.azure.com`;
+  throw new Error(
+    'Azure OpenAI needs an endpoint. Paste the full URL from the portal — ' +
+      'https://<resource>.services.ai.azure.com for AI Foundry, or ' +
+      'https://<resource>.openai.azure.com for Azure OpenAI.',
+  );
 }
 
 export function azureOpenAiLlmFactory(): ProviderFactory<LlmProvider, AzureOpenAiConfig> {

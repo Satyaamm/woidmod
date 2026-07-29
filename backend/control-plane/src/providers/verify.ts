@@ -683,12 +683,23 @@ const PROBES: Record<string, Probe> = {
    */
   'azure-openai-llm': async (input) => {
     const key = required(input, 'secrets', 'apiKey');
-    const resource = required(input, 'config', 'resourceName');
     const deployment = required(input, 'config', 'deploymentName');
     const apiVersion = optional(input, 'config', 'apiVersion') || '2024-10-21';
 
-    // A customer who pasted the whole endpoint into "resource name" is the most
-    // common support ticket here, so accept both and normalise.
+    // `endpoint` first: an AI Foundry resource is served from
+    // {resource}.services.ai.azure.com, which cannot be expressed as a resource
+    // name. `resourceName` remains the shorthand for the classic host, and a
+    // customer who pasted a whole URL into it is the most common support ticket
+    // here — so accept that too rather than failing on their behalf.
+    const endpoint = optional(input, 'config', 'endpoint');
+    const resource = endpoint || optional(input, 'config', 'resourceName');
+    if (!resource) {
+      throw new Error(
+        'azure-openai-llm needs an endpoint: paste the URL from the portal ' +
+          '(https://<resource>.services.ai.azure.com for AI Foundry), or give a resource name.',
+      );
+    }
+
     const host = /^https?:\/\//i.test(resource)
       ? new URL(resource).origin
       : `https://${resource}.openai.azure.com`;
