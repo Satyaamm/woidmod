@@ -98,8 +98,26 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     key: 'speechmatics-stt',
     kind: 'stt',
     label: 'Speechmatics',
-    configFields: [],
+    /*
+     * Speechmatics runs SEPARATE regional endpoints and the adapter already
+     * supports all three — but the form exposed none of them, so every workspace
+     * was silently pinned to the EU host. A US customer's traffic left their
+     * region, and residency (derived from this field) could not be stated.
+     *
+     * VERIFIED 2026-07-29 https://docs.speechmatics.com/introduction/authentication
+     *   realtime: eu.rt.speechmatics.com · us.rt.speechmatics.com ·
+     *   global.rt.speechmatics.com ("auto-routes to nearest region";
+     *   "if you have data residency or compliance requirements, use a regional
+     *    endpoint instead").
+     */
+    configFields: ['region'],
+    optionalFields: ['region'],
+    defaults: { region: 'eu' },
     secretFields: ['apiKey'],
+    note:
+      'Region picks the data centre your audio is processed in: eu, us, or global. ' +
+      'Global auto-routes for latency and is NOT a residency guarantee — choose eu or us ' +
+      'if you have a residency requirement.',
     keyUrl: 'https://portal.speechmatics.com/manage-access',
     runnable: true,
   },
@@ -172,16 +190,36 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     key: 'azure-openai-llm',
     kind: 'llm',
-    label: 'Azure OpenAI',
-    // Endpoint is https://{resourceName}.openai.azure.com; deployment is the model.
-    configFields: ['resourceName', 'deploymentName', 'apiVersion'],
-    optionalFields: ['apiVersion'],
+    label: 'Azure OpenAI / AI Foundry',
+    /*
+     * `endpoint` exists because deriving the host from `resourceName` only ever
+     * produced `https://{resource}.openai.azure.com` — and an AI Foundry resource
+     * is served from `https://{resource}.services.ai.azure.com`. A Foundry user had
+     * no field in which to say so, so the form could not express their deployment
+     * at all. Sovereign clouds (.azure.us, .azure.cn) and private link were equally
+     * unreachable.
+     *
+     * VERIFIED 2026-07-29:
+     * https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/endpoints
+     *   "Azure OpenAI endpoints, usually of the form https://<resource-name>.openai.azure.com"
+     *   REST example: POST https://<resource>.services.ai.azure.com/openai/deployments/
+     *   <deployment>/chat/completions?api-version=2024-10-21
+     * https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle
+     *   "base_url accepts both https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/
+     *    and https://YOUR-RESOURCE-NAME.services.ai.azure.com/openai/v1/ formats."
+     */
+    configFields: ['endpoint', 'resourceName', 'deploymentName', 'apiVersion'],
+    optionalFields: ['endpoint', 'resourceName', 'apiVersion'],
     defaults: { apiVersion: '2024-10-21' },
     secretFields: ['apiKey'],
     note:
-      'Resource name is the subdomain of your endpoint (your-resource in ' +
-      'https://your-resource.openai.azure.com). Deployment name is the label you chose when you ' +
-      'deployed the model — not the model name. Residency follows the resource region.',
+      'Paste the full endpoint from the Foundry/Azure portal — e.g. ' +
+      'https://your-resource.services.ai.azure.com for AI Foundry, or ' +
+      'https://your-resource.openai.azure.com for Azure OpenAI. (Leave it empty and give ' +
+      'just the resource name only if you are on the classic openai.azure.com host.) ' +
+      'Deployment name is the label you chose when deploying — not the model name. ' +
+      'Set API version to "v1" for the undated surface Microsoft recommends for new work. ' +
+      'Residency follows the resource region.',
     keyUrl: 'https://ai.azure.com',
     runnable: true,
   },
@@ -214,9 +252,9 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     key: 'sarvam-stt',
     kind: 'stt',
     label: 'Sarvam AI (Saarika)',
-    configFields: ['language'],
-    optionalFields: ['language'],
-    defaults: { language: 'en-IN' },
+    // Language comes from the AGENT, not the credential — one Sarvam key serves
+    // agents in different languages.
+    configFields: [],
     secretFields: ['apiKey'],
     note:
       'Indian languages — Hindi, Bengali, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, ' +
@@ -229,9 +267,8 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     key: 'sarvam-tts',
     kind: 'tts',
     label: 'Sarvam AI (Bulbul)',
-    configFields: ['language', 'speaker'],
-    optionalFields: ['language', 'speaker'],
-    defaults: { language: 'en-IN', speaker: 'anushka' },
+    // Voice and language are agent settings; the credential is just the key.
+    configFields: [],
     secretFields: ['apiKey'],
     note:
       'Indian-language voices. One Sarvam account serves both STT and TTS, so the key is ' +
@@ -243,9 +280,11 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     key: 'inworld-tts',
     kind: 'tts',
     label: 'Inworld',
-    configFields: ['voice', 'model'],
-    optionalFields: ['voice', 'model'],
-    defaults: { voice: 'Ashley', model: 'inworld-tts-1.5-max' },
+    // Voice is an agent setting. `model` is genuine routing — it selects the TTS
+    // engine for every agent using this credential.
+    configFields: ['model'],
+    optionalFields: ['model'],
+    defaults: { model: 'inworld-tts-1.5-max' },
     secretFields: ['apiKey'],
     // Their key is issued base64-encoded; pasting the raw pair fails auth with a
     // 401 that reads like a wrong key rather than a wrongly-encoded one.
@@ -257,12 +296,15 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     key: 'fishaudio-tts',
     kind: 'tts',
     label: 'Fish Audio',
-    // referenceId selects a cloned/library voice; without one the model default speaks.
-    configFields: ['referenceId', 'model'],
-    optionalFields: ['referenceId', 'model'],
+    // The cloned/library voice id is the AGENT's voice setting, not a credential
+    // field. `model` selects the engine and is real routing config.
+    configFields: ['model'],
+    optionalFields: ['model'],
     defaults: { model: 's1' },
     secretFields: ['apiKey'],
-    note: 'Reference ID is the voice model id from the Fish Audio library or your own clone.',
+    note:
+      'Set the voice on the agent — it takes the Fish Audio reference ID of a library ' +
+      'voice or your own clone.',
     keyUrl: 'https://fish.audio/go-api',
     runnable: true,
   },

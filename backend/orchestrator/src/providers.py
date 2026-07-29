@@ -154,12 +154,31 @@ def build_stt(config: AgentConfig):
         )
 
     if p == "speechmatics-stt":
+        # Speechmatics runs SEPARATE regional endpoints, and the region decides where
+        # the audio is processed. Leaving it to the plugin default silently pinned
+        # every workspace to one data centre regardless of what its residency
+        # settings claimed.
+        #
+        # VERIFIED 2026-07-29 https://docs.speechmatics.com/introduction/authentication
+        #   eu.rt.speechmatics.com | us.rt.speechmatics.com | global.rt.speechmatics.com
+        #   ("global auto-routes to the nearest region" — latency, not residency)
         speechmatics = _need("speechmatics")
-        return speechmatics.STT(
-            api_key=config.secret("speechmatics.apiKey", "SPEECHMATICS_API_KEY"),
+        hosts = {
+            "eu": "wss://eu.rt.speechmatics.com",
+            "us": "wss://us.rt.speechmatics.com",
+            "global": "wss://global.rt.speechmatics.com",
+        }
+        region = (config.cfg("speechmatics-stt", "region", "SPEECHMATICS_REGION", "eu") or "eu").lower()
+        kwargs = {
+            "api_key": config.secret("speechmatics.apiKey", "SPEECHMATICS_API_KEY"),
             # Two-letter code only; "en-US" is rejected.
-            language=_short(lang),
-        )
+            "language": _short(lang),
+        }
+        # An unrecognised region falls through to the plugin default rather than
+        # inventing a host that will fail DNS and read as a network fault.
+        if region in hosts:
+            kwargs["base_url"] = hosts[region]
+        return speechmatics.STT(**kwargs)
 
     if p == "soniox-stt":
         soniox = _need("soniox")
@@ -210,6 +229,12 @@ def build_llm(config: AgentConfig):
         }
         if base_url:
             kwargs["base_url"] = base_url
+        # The control-plane adapter sets the `openai-organization` header from this.
+        # Dropping it here meant one credential billed different orgs depending on
+        # which side of the platform made the call.
+        organization = config.cfg("openai-llm", "organization", "OPENAI_ORG_ID")
+        if organization:
+            kwargs["organization"] = organization
         return openai.LLM(**kwargs)
 
     if p == "gemini-llm":
@@ -239,17 +264,30 @@ def build_llm(config: AgentConfig):
         # documentation for the dashboard; the deployment is what the URL is built
         # from, which is why it is a required config field rather than optional.
         openai = _need("openai")
-        resource = config.require_cfg("azure-openai-llm", "resourceName", "AZURE_OPENAI_RESOURCE")
+        # `endpoint` first. An AI Foundry resource is served from
+        # {resource}.services.ai.azure.com — deriving the host from a resource name
+        # only ever produces .openai.azure.com, so a Foundry deployment was
+        # unreachable no matter what the customer typed. Sovereign clouds
+        # (.azure.us/.azure.cn) and private link had the same problem.
+        endpoint_cfg = config.cfg("azure-openai-llm", "endpoint", "AZURE_OPENAI_ENDPOINT")
+        resource = endpoint_cfg or config.cfg(
+            "azure-openai-llm", "resourceName", "AZURE_OPENAI_RESOURCE"
+        )
+        if not resource:
+            raise RuntimeError(
+                "azure-openai-llm needs an endpoint. Paste the URL from the portal "
+                "(https://<resource>.services.ai.azure.com for AI Foundry, "
+                "https://<resource>.openai.azure.com for Azure OpenAI), or set a resource name."
+            )
         deployment = config.require_cfg(
             "azure-openai-llm", "deploymentName", "AZURE_OPENAI_DEPLOYMENT"
         )
         api_version = config.cfg(
             "azure-openai-llm", "apiVersion", "AZURE_OPENAI_API_VERSION", "2024-10-21"
         )
-        # Customers routinely paste the whole endpoint into "resource name".
-        # Accepting both costs three lines and removes a support ticket.
+        # Customers routinely paste the whole endpoint into "resource name" too.
         endpoint = (
-            resource
+            resource.rstrip("/")
             if resource.startswith("http://") or resource.startswith("https://")
             else f"https://{resource}.openai.azure.com"
         )
@@ -322,6 +360,7 @@ def build_tts(config: AgentConfig):
         return inworld.TTS(
             voice=voice or "Ashley",
             language=config.language,
+            model=config.cfg("inworld-tts", "model", "INWORLD_TTS_MODEL", "inworld-tts-1.5-max"),
             api_key=config.secret("inworld.apiKey", "INWORLD_API_KEY"),
         )
 
@@ -330,7 +369,10 @@ def build_tts(config: AgentConfig):
         # is the id of a library or cloned voice, not a name.
         fishaudio = _need("fishaudio")
         return fishaudio.TTS(
+            # Fish calls the voice a `reference_id` — the id of a library or cloned
+            # voice. It comes from the AGENT's voice setting, not the credential.
             reference_id=voice or None,
+            model=config.cfg("fishaudio-tts", "model", "FISH_TTS_MODEL", "s1"),
             api_key=config.secret("fishaudio.apiKey", "FISH_API_KEY"),
         )
 
