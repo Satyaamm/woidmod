@@ -17,6 +17,7 @@ import {
   type TenantScope,
 } from '../../domain/tenant.js';
 import { ConflictError, NotFoundError } from '../../repositories/types.js';
+import { RoleError } from '../../domain/permissions.js';
 
 /** Request-scoped variables, populated by `tenantContext`. */
 export type Vars = {
@@ -77,6 +78,11 @@ export function errorHandler(container: Container) {
     }
     if (err instanceof ConflictError) {
       return c.json({ error: 'conflict', message: err.message }, 409);
+    }
+    // Role/permission validation — carries its own status (400 for an invalid set,
+    // 403 for an attempted privilege escalation).
+    if (err instanceof RoleError) {
+      return c.json({ error: 'invalid_role', message: err.message }, err.status as 400);
     }
     // Never leak an internal message to the client — log it, return a generic body.
     container.logger.error('unhandled error', { message: err.message, stack: err.stack });

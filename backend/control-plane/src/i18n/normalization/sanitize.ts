@@ -62,6 +62,9 @@ const RULES: readonly SanitizeRule[] = [
   { kind: 'json-artifact', pattern: /"([a-zA-Z_][\w.-]{0,40})"\s*:\s*/g, to: ' ' },
   // Braces/brackets left over once the keys are gone.
   { kind: 'json-artifact', pattern: /[{}]/g, to: ' ' },
+  // Straight double quotes: no TTS engine voices them, and JSON string values leave
+  // them stranded around perfectly ordinary words. Typographic quotes are left alone.
+  { kind: 'json-artifact', pattern: /"/g, to: '' },
 
   // --- markdown structure ----------------------------------------------------------
   { kind: 'markdown', pattern: /^[ \t]{0,8}#{1,6}[ \t]+/gm, to: '' }, // ATX headers

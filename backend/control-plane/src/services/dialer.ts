@@ -38,37 +38,39 @@ import type {
   LeadRepository,
 } from '../repositories/telephony-repository.js';
 import type { HandlerChain } from '../core/patterns/chain.js';
-import type { DispatchContext, DispatchDecision } from './compliance.js';
+import type { DispatchContext, DispatchDecision, EffectiveRule } from './compliance.js';
+import { intersectWindows, resolveRule } from './compliance.js';
+import { primaryTimezoneFor, timezonesFor } from '../i18n/countries.js';
+import { holidayOn } from './holidays.js';
 
 // ===========================================================================
 // 1. Callee local time
 // ===========================================================================
 
 /**
- * SIMPLIFICATION — read this before trusting the calling-window rule.
+ * The callee's local wall-clock time, which is what the calling-window rule is
+ * actually about.
  *
- * The legally correct input is the callee's local wall-clock time. We get it two
- * ways, in order of preference:
+ * Resolution order:
  *
- *   (a) `lead.timezone` — an IANA zone supplied with the lead. Resolved with
- *       `Intl.DateTimeFormat`, which is DST-correct. This is the right answer and
- *       is what a production import should always populate.
+ *   (a) `lead.timezone` — an IANA zone on the lead. Exact, and DST-correct because
+ *       `Intl` knows the transition dates. This is what a production import should
+ *       always populate.
  *
- *   (b) A fixed country -> UTC-offset table (below). This is a DELIBERATE
- *       SIMPLIFICATION with two known errors:
- *         - It ignores DST, so it can be an hour off for ~7 months of the year.
- *         - It uses one offset per country, which is wrong for the US, Canada,
- *           Russia, Brazil, Australia and others spanning multiple zones. For the
- *           US we use US-Eastern.
+ *   (b) The country's IANA zones from the country registry. For a single-zone
+ *       country that is exact. For a multi-zone country (US, CA, BR, AU, RU) it is
+ *       ambiguous, and the ambiguity is resolved by requiring the window to be open
+ *       in EVERY zone the country spans — see `calleeLocalTimes`.
  *
- * Both errors can push a dial outside the permitted window. The offsets below are
- * therefore chosen to be CONSERVATIVE where a choice exists (US-Eastern rather
- * than US-Pacific means a 9pm Eastern cut-off applies to a 6pm Pacific callee —
- * we under-dial rather than over-dial).
+ * The previous implementation used a fixed UTC offset per country, which was wrong
+ * twice over: it ignored DST (an hour out for ~7 months a year), and for the US it
+ * assumed Eastern. That second choice was described as conservative, but it is only
+ * conservative at the END of the window. At the START it is the opposite: 08:00
+ * Eastern is 05:00 Pacific, so a Pacific callee would have been dialled three hours
+ * before the window opened. Requiring all zones to be open fixes both ends.
  *
- * ⚖️ The real fix is per-lead timezone resolution from the NPA-NXX / number range,
- * which is Phase 3 work in docs/03 §I. Until then, importing leads without a
- * timezone in a multi-zone country is a known compliance gap — flagged for counsel.
+ * The offset table below is kept ONLY as a last resort for countries absent from the
+ * registry, where an approximate local hour still beats treating the callee as UTC.
  */
 export const COUNTRY_UTC_OFFSET_MINUTES: Record<string, number> = {
   US: -300, // US-Eastern (standard). Conservative for the western zones.
@@ -117,6 +119,97 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
 };
 
+/** PURE. Wall-clock day+hour in one IANA zone, or null if the zone is unusable. */
+function inZone(at: Date, timezone: string): { dayOfWeek: number; hour: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'short',
+      hour: 'numeric',
+      hour12: false,
+    }).formatToParts(at);
+
+    const weekday = parts.find((p) => p.type === 'weekday')?.value;
+    const hourRaw = parts.find((p) => p.type === 'hour')?.value;
+    const dayOfWeek = weekday ? WEEKDAY_INDEX[weekday] : undefined;
+    const hour = hourRaw === undefined ? undefined : Number(hourRaw) % 24;
+
+    if (dayOfWeek === undefined || hour === undefined || !Number.isFinite(hour)) return null;
+    return { dayOfWeek, hour };
+  } catch {
+    return null;
+  }
+}
+
+export interface ZonedLocalTime {
+  zone: string;
+  dayOfWeek: number;
+  hour: number;
+}
+
+/**
+ * PURE. The callee's own calendar date — what a holiday lookup has to be asked
+ * about. Using the server's date instead gets it wrong either side of midnight for
+ * anyone more than a few hours away, which is most of the world.
+ */
+export function calleeLocalDate(
+  at: Date,
+  country: string,
+  timezone?: string | null,
+): { year: number; month: number; day: number } {
+  const zone = timezone || primaryTimezoneFor(country.toUpperCase());
+  if (zone) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(at);
+      const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+      const year = get('year');
+      const month = get('month');
+      const day = get('day');
+      if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
+        return { year, month, day };
+      }
+    } catch {
+      // Unusable zone — fall through to UTC rather than throw.
+    }
+  }
+  return { year: at.getUTCFullYear(), month: at.getUTCMonth() + 1, day: at.getUTCDate() };
+}
+
+/**
+ * PURE. Every local time this callee might plausibly be in.
+ *
+ * One entry when the lead carries a zone or the country has a single one. More when
+ * the country spans several and the lead does not say which — and then the window
+ * rule requires ALL of them to be open, because dialling a number that might be in
+ * Los Angeles at 08:00 New York time is a call at 05:00 to the person who answers.
+ *
+ * Returns an empty array only when nothing can be resolved; the caller then falls
+ * back to `calleeLocalTime`, which always yields something.
+ */
+export function calleeLocalTimes(
+  at: Date,
+  country: string,
+  timezone?: string | null,
+): ZonedLocalTime[] {
+  if (timezone) {
+    const exact = inZone(at, timezone);
+    if (exact) return [{ zone: timezone, ...exact }];
+  }
+
+  const zones = timezonesFor(country.toUpperCase());
+  const out: ZonedLocalTime[] = [];
+  for (const zone of zones) {
+    const local = inZone(at, zone);
+    if (local) out.push({ zone, ...local });
+  }
+  return out;
+}
+
 /** PURE. Callee wall-clock time for the calling-window rule. */
 export function calleeLocalTime(
   at: Date,
@@ -144,6 +237,13 @@ export function calleeLocalTime(
       // Unknown zone string — fall through to the offset table rather than throw.
       // A bad timezone must not become a reason to dial without a window check.
     }
+  }
+
+  // The country's own primary zone, via Intl — DST-correct, unlike the offset table.
+  const primary = primaryTimezoneFor(country.toUpperCase());
+  if (primary) {
+    const local = inZone(at, primary);
+    if (local) return { ...local, source: 'iana' };
   }
 
   const offset = COUNTRY_UTC_OFFSET_MINUTES[country.toUpperCase()];
@@ -256,24 +356,15 @@ export type CallingWindow = ComplianceProfile['callingWindows'][number];
  * PURE. The effective calling windows are the INTERSECTION of the compliance
  * profile's (legally binding) windows and the campaign's (operational) ones.
  * A campaign can narrow the window; it can never widen it.
+ *
+ * The intersection itself lives in `compliance.ts` because the same "may only
+ * tighten" operation layers the callee's statutory window on top of both.
  */
 export function effectiveCallingWindows(
   profileWindows: readonly CallingWindow[],
   campaignWindows: readonly CallingWindow[],
 ): CallingWindow[] {
-  if (campaignWindows.length === 0) return [...profileWindows];
-  if (profileWindows.length === 0) return [...campaignWindows];
-
-  const out: CallingWindow[] = [];
-  for (const p of profileWindows) {
-    for (const c of campaignWindows) {
-      if (p.dayOfWeek !== c.dayOfWeek) continue;
-      const startHour = Math.max(p.startHour, c.startHour);
-      const endHour = Math.min(p.endHour, c.endHour);
-      if (startHour < endHour) out.push({ dayOfWeek: p.dayOfWeek, startHour, endHour });
-    }
-  }
-  return out;
+  return intersectWindows(profileWindows, campaignWindows);
 }
 
 /**
@@ -309,11 +400,11 @@ export function consentProofValid(proof: ConsentProof | null, at: Date): boolean
  * must be refused, or null.
  */
 export function consentGate(
-  profile: ComplianceProfile,
+  rule: EffectiveRule,
   lead: Pick<Lead, 'consentProof' | 'country' | 'isMobile'>,
   at: Date,
 ): string | null {
-  if (!profile.requireConsentProof) return null;
+  if (!rule.requireConsentProof) return null;
   if (consentProofValid(lead.consentProof, at)) return null;
 
   const mobileNote =
@@ -361,21 +452,46 @@ export function buildDispatchContext(input: {
   lead: Pick<Lead, 'country' | 'state' | 'timezone' | 'attemptCount' | 'consentProof' | 'onDncList'>;
   onDncList: boolean;
   at: Date;
+  /** Pass the rule the caller already resolved — it decides which DNC registries to query. */
+  rule?: EffectiveRule;
+  dncUnavailable?: readonly string[];
+  requireDncScreening?: boolean;
 }): DispatchContext {
   const local = calleeLocalTime(input.at, input.lead.country, input.lead.timezone);
+  const rule =
+    input.rule ??
+    resolveRule({
+      calleeCountry: input.lead.country,
+      calleeState: input.lead.state,
+      profile: input.profile,
+    });
   return {
     profile: input.profile,
+    rule,
     calleeCountry: input.lead.country.toUpperCase(),
     calleeState: input.lead.state,
     calleeLocalTime: { dayOfWeek: local.dayOfWeek, hour: local.hour },
+    calleeZonedTimes: calleeLocalTimes(input.at, input.lead.country, input.lead.timezone),
+    calleeHoliday: holidayOn(
+      input.lead.country,
+      calleeLocalDate(input.at, input.lead.country, input.lead.timezone),
+    ),
     onDncList: input.onDncList || input.lead.onDncList,
+    dncUnavailable: input.dncUnavailable ?? [],
+    requireDncScreening: input.requireDncScreening,
     attemptsSoFar: input.lead.attemptCount,
     hasConsentProof: consentProofValid(input.lead.consentProof, input.at),
     isOutbound: true,
   };
 }
 
-/** Which blocks are permanent for this lead vs. worth retrying later. */
+/**
+ * Which blocks are permanent for this lead vs. worth retrying later.
+ *
+ * `dnc_screening` is temporal, not terminal: the number is not refused, the
+ * integration is missing. Suppressing the lead would turn an operational gap into a
+ * permanent loss of a contact that may be perfectly callable tomorrow.
+ */
 const TERMINAL_BLOCK_RULES = new Set(['dnc', 'consent_proof', 'jurisdiction']);
 const EXHAUSTED_BLOCK_RULES = new Set(['attempts']);
 
@@ -410,8 +526,20 @@ export interface PlaceCallResult {
 export interface DialerEffects {
   now(): Date;
   newAuditId(): string;
-  /** External DNC/DND registry screening (US national DNC, TPS, Bloctel, …). */
-  isOnDnc(input: { e164: string; country: string; registries: readonly string[] }): Promise<boolean>;
+  /**
+   * DNC/DND screening against the registries the callee's country requires.
+   *
+   * Returns what was screened as well as what matched: a deployment with no
+   * registry integrations must not be able to produce an audit row that reads like
+   * a clean screen. `DncService` implements this; the chain decides what an
+   * unscreenable number means.
+   */
+  screenDnc(input: {
+    scope: WorkspaceScope;
+    e164: string;
+    country: string;
+    registries: readonly string[];
+  }): Promise<{ onList: boolean; screened: string[]; unavailable: string[] }>;
   placeCall(request: PlaceCallRequest): Promise<PlaceCallResult>;
   recordAudit(entry: DispatchAuditEntry): Promise<void>;
 }
@@ -457,6 +585,8 @@ export class Dialer {
     private readonly chain: HandlerChain<DispatchDecision, DispatchContext>,
     private readonly effects: DialerEffects,
     private readonly leads: LeadRepository,
+    /** Refuse a dial whose statutory registries could not be screened. Fails closed. */
+    private readonly requireDncScreening: boolean = true,
   ) {}
 
   /**
@@ -494,19 +624,37 @@ export class Dialer {
 
     const effective = effectiveProfile(profile, campaign);
 
+    // -- 1b. Resolve the CALLEE's rules ---------------------------------------
+    // Everything below is decided by where the person being called is, layered on
+    // top of (and never looser than) the workspace's own profile.
+    const rule = resolveRule({
+      calleeCountry: lead.country,
+      calleeState: lead.state,
+      profile: effective,
+    });
+
     // -- 2. Consent gate (defence in depth over the chain's own rule) --------
-    const consentFailure = consentGate(effective, lead, at);
+    const consentFailure = consentGate(rule, lead, at);
 
     // -- 3. Compliance chain -------------------------------------------------
-    const onDnc =
-      lead.onDncList ||
-      (await this.effects.isOnDnc({
-        e164: lead.e164,
-        country: lead.country,
-        registries: effective.dncRegistries,
-      }));
+    // Registries follow the callee: a French number is screened against Bloctel
+    // even when the workspace itself is registered in the UK.
+    const screening = await this.effects.screenDnc({
+      scope,
+      e164: lead.e164,
+      country: lead.country,
+      registries: rule.dncRegistries,
+    });
 
-    const ctx = buildDispatchContext({ profile: effective, lead, onDncList: onDnc, at });
+    const ctx = buildDispatchContext({
+      profile: effective,
+      lead,
+      onDncList: screening.onList,
+      at,
+      rule,
+      dncUnavailable: screening.unavailable,
+      requireDncScreening: this.requireDncScreening,
+    });
     const chainResult = await this.chain.run({ allowed: true, reason: 'ok' }, ctx);
 
     const rulesApplied = consentFailure
@@ -534,7 +682,7 @@ export class Dialer {
     });
 
     if (blocked) {
-      await this.applyBlock(scope, effective.callingWindows, lead, rulesApplied, at);
+      await this.applyBlock(scope, rule.callingWindows, lead, rulesApplied, at);
       return {
         status: 'blocked',
         leadId: lead.id,
@@ -584,8 +732,10 @@ export class Dialer {
       toE164: lead.e164,
       trunkId: fromNumber.trunkId,
       attemptNumber,
-      twoPartyConsentRequired: effective.consentModel === 'two_party',
-      aiDisclosureRequired: effective.aiDisclosureRequired,
+      // Recording consent and disclosure follow the callee too — a US federal
+      // one-party baseline does not apply to a call landing in California or Berlin.
+      twoPartyConsentRequired: rule.consentModel === 'two_party',
+      aiDisclosureRequired: rule.aiDisclosureRequired,
     });
 
     await this.leads.update(scope, lead.id, {
@@ -664,8 +814,16 @@ export class Dialer {
       });
     }
 
+    // Retries are scheduled against the CALLEE's window, not the workspace's, or a
+    // French lead gets re-queued into UK hours and blocks again on the next attempt.
+    const rule = resolveRule({
+      calleeCountry: lead.country,
+      calleeState: lead.state,
+      profile: effective,
+    });
+
     const retryable = campaign.retryPolicy.retryOn as readonly string[];
-    const capped = lead.attemptCount >= effective.maxAttemptsPerLead;
+    const capped = lead.attemptCount >= rule.maxAttemptsPerLead;
     if (capped || !retryable.includes(outcome)) {
       return this.leads.update(scope, lead.id, {
         lastOutcome: outcome,
@@ -678,7 +836,7 @@ export class Dialer {
     const delaySec = backoffSeconds(campaign.retryPolicy, lead.attemptCount);
     const earliest = new Date(at.getTime() + delaySec * 1000);
     // Never schedule a retry into a closed window — push to the next opening.
-    const windows = effective.callingWindows;
+    const windows = rule.callingWindows;
     const { dayOfWeek, hour } = calleeLocalTime(earliest, lead.country, lead.timezone);
     const open =
       windows.length === 0 ||

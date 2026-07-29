@@ -7,6 +7,7 @@
  */
 
 import { newId } from '../domain/ids.js';
+import { validateFlow } from '../domain/flow-schema.js';
 import type { z } from 'zod';
 import {
   agentSchema,
@@ -16,6 +17,15 @@ import {
   type Agent,
   type CreateAgentInput,
 } from '../domain/schemas.js';
+import type { Call } from '../domain/call-schemas.js';
+import type { CallRepository } from '../repositories/call-repository.js';
+
+/** Nearest-rank percentile. Empty input is 0, not NaN — this renders in a table. */
+function percentile(values: number[], p: number): number {
+  const sorted = values.filter((n) => n > 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0;
+}
 
 type UpdateAgentInput = z.infer<typeof updateAgentInput>;
 import { require_, type WorkspaceScope } from '../domain/tenant.js';
@@ -30,10 +40,18 @@ import {
 /** Sensible starting pipeline. Speculative prefill and semantic endpointing ON by default —
  *  the whole latency thesis is worthless if the defaults are the slow path. */
 const DEFAULT_PIPELINE = {
-  sttProvider: 'mock-stt',
-  llmProvider: 'mock-llm',
-  llmModel: 'mock-fast',
-  ttsProvider: 'mock-tts',
+  // Real providers, not mocks. A new agent must be able to hold a real
+  // conversation the moment credentials exist — wiring the sample agent to the
+  // simulator meant "talk to your agent" could never work, which defeats the
+  // 60-second activation path entirely (docs/11 §A).
+  //
+  // If no credentials are configured, the runtime endpoint reports exactly which
+  // are missing and the worker refuses the call with an actionable message. That
+  // is the honest failure; a silently-mocked call is not.
+  sttProvider: 'deepgram-stt',
+  llmProvider: 'anthropic-llm',
+  llmModel: 'claude-haiku-4-5',
+  ttsProvider: 'cartesia-tts',
   endpointingStrategy: 'semantic',
   bargeInStrategy: 'target-speaker',
   temperature: 0.3,
@@ -43,8 +61,8 @@ const DEFAULT_PIPELINE = {
 };
 
 const DEFAULT_VOICE = {
-  providerKey: 'mock-tts',
-  voiceId: 'mock-en-f',
+  providerKey: 'cartesia-tts',
+  voiceId: 'a0e99841-438c-4a64-b679-ae501e7d6091',
   speed: 1,
   lexicon: [],
 };
@@ -66,18 +84,101 @@ export class AgentService {
   constructor(
     private readonly agents: AgentRepository,
     private readonly workspaces: WorkspaceRepository,
+    /**
+     * Calls, for per-agent statistics.
+     *
+     * Optional so existing constructions (tests, the simulator) keep working —
+     * without it, stats stay at the stored zeros rather than throwing.
+     */
+    private readonly calls?: CallRepository,
   ) {}
 
   async list(scope: WorkspaceScope, opts?: ListOptions) {
     require_(scope, 'agent:read');
-    return this.agents.list(scope, opts);
+    const page = await this.agents.list(scope, opts);
+    return { ...page, items: await this.withStats(scope, page.items) };
   }
 
   async get(scope: WorkspaceScope, agentId: string): Promise<Agent> {
     require_(scope, 'agent:read');
     const agent = await this.agents.get(scope, agentId);
     if (!agent) throw new NotFoundError('agent', agentId);
-    return agent;
+    return (await this.withStats(scope, [agent]))[0] ?? agent;
+  }
+
+  /**
+   * Per-agent statistics, computed from the call log.
+   *
+   * `agent.stats` is written as zeros by `create` and nothing has ever updated
+   * it — so "Calls today", "Success", "p50", "p95" and "Cost / call" were five
+   * columns of `0` in the agent list and six zeroed cards on the agent page,
+   * for every agent, forever. They looked like metrics and were a struct literal.
+   *
+   * They are derived here instead of denormalised onto the agent row: a counter
+   * maintained on write has to be right on every path that touches a call
+   * (ingest, retry, cancel, backfill) and is silently wrong the moment one
+   * forgets. Reading the log cannot drift.
+   *
+   * Scoped to the caller's mode, so a browser rehearsal never inflates the
+   * numbers next to calls that reached real customers — `CallService.list`
+   * applies the same rule.
+   */
+  private async withStats(scope: WorkspaceScope, agents: Agent[]): Promise<Agent[]> {
+    if (!this.calls || agents.length === 0) return agents;
+
+    let calls: Call[];
+    try {
+      // One query for the workspace, then bucketed in memory: N agents would
+      // otherwise mean N queries on a page that already renders a table.
+      const page = await this.calls.list(scope, { page: 1, pageSize: 1000 });
+      calls = page.items;
+    } catch {
+      // Statistics must never take down the agent list.
+      return agents;
+    }
+
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const startOfDay = midnight.getTime();
+
+    const byAgent = new Map<string, Call[]>();
+    for (const call of calls) {
+      const bucket = byAgent.get(call.agentId);
+      if (bucket) bucket.push(call);
+      else byAgent.set(call.agentId, [call]);
+    }
+
+    return agents.map((agent) => {
+      const mine = byAgent.get(agent.id) ?? [];
+      if (mine.length === 0) return agent;
+
+      const today = mine.filter((k) => new Date(k.startedAt).getTime() >= startOfDay);
+      // "Did it work" is only answerable for calls that ended. Counting a call
+      // still in progress as a failure makes the success rate dip whenever
+      // someone is mid-conversation.
+      const finished = mine.filter(
+        (k) => k.status === 'completed' || k.status === 'failed' || k.status === 'no_answer',
+      );
+      const resolved = finished.filter(
+        (k) => k.status === 'completed' && k.outcome === 'resolved',
+      );
+
+      return {
+        ...agent,
+        stats: {
+          callsToday: today.length,
+          successRate: finished.length ? resolved.length / finished.length : 0,
+          avgLatencyMs: percentile(finished.map((k) => k.medianLatencyMs), 0.5),
+          p95LatencyMs: percentile(finished.map((k) => k.p95LatencyMs), 0.95),
+          avgDurationSec: finished.length
+            ? Math.round(finished.reduce((s, k) => s + k.durationSec, 0) / finished.length)
+            : 0,
+          costPerCallUsd: finished.length
+            ? finished.reduce((s, k) => s + k.costUsd, 0) / finished.length
+            : 0,
+        },
+      };
+    });
   }
 
   async create(scope: WorkspaceScope, input: CreateAgentInput): Promise<Agent> {
@@ -97,9 +198,11 @@ export class AgentService {
       description: input.description ?? '',
       language: input.language ?? 'en-US',
       prompt: input.prompt,
+      modality: input.modality ?? 'voice',
       voice: voiceConfigSchema.parse({ ...DEFAULT_VOICE, ...(input.voice ?? {}) }),
       pipeline: pipelineConfigSchema.parse({ ...DEFAULT_PIPELINE, ...(input.pipeline ?? {}) }),
       tools: [],
+      flow: input.flow,
       createdAt: now,
       updatedAt: now,
       stats: {
@@ -135,6 +238,9 @@ export class AgentService {
     if (patch.description !== undefined) merged.description = patch.description;
     if (patch.language !== undefined) merged.language = patch.language;
     if (patch.prompt !== undefined) merged.prompt = patch.prompt;
+    if (patch.modality !== undefined) merged.modality = patch.modality;
+    // The flow is a full replacement — the builder sends the whole compiled graph.
+    if (patch.flow !== undefined) merged.flow = patch.flow;
 
     // Nested config merges rather than replaces.
     if (patch.voice) merged.voice = voiceConfigSchema.parse({ ...existing.voice, ...patch.voice });
@@ -159,6 +265,20 @@ export class AgentService {
 
     if (agent.status === 'archived') {
       throw new ConflictError('cannot publish an archived agent');
+    }
+
+    // A flow that can't run must not go live. The builder shows these as node badges;
+    // this is the server-side backstop so a bad graph can't be published past the UI.
+    if (agent.flow) {
+      const errors = validateFlow(agent.flow, {
+        modality: agent.modality,
+        toolIds: agent.tools.map((t) => t.id),
+      }).filter((i) => i.level === 'error');
+      if (errors.length > 0) {
+        throw new ConflictError(
+          `cannot publish: the flow has ${errors.length} error(s) — first: ${errors[0]!.message}`,
+        );
+      }
     }
 
     const nextVersion = agent.version + 1;

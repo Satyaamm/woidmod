@@ -5,7 +5,7 @@
  * table density and spacing rhythm do ~80% of the work of not looking like default
  * antd. Everything visual resolves through here — no component hardcodes a colour.
  *
- * Visual direction: Cartesia-style — near-black / off-white neutrals, one vivid
+ * Visual direction: near-black / off-white neutrals, one vivid
  * green accent used sparingly, generous radius, tight type.
  */
 import type { ThemeConfig } from 'antd';

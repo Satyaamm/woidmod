@@ -19,8 +19,8 @@ export function SpendMeter() {
     if (!org || !workspace) return;
     let live = true;
     workspaceApi
-      .list(org.id)
-      .then((all) => live && setData(all.find((w) => w.id === workspace.id) ?? null))
+      .list()
+      .then((page) => live && setData(page.items.find((w: Workspace) => w.id === workspace.id) ?? null))
       .catch(() => undefined);
     return () => {
       live = false;

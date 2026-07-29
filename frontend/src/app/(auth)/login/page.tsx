@@ -25,11 +25,18 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await logIn({ email: values.email, password: values.password });
+      await logIn({ email: values.email, password: values.password }, values.remember);
       const session = useSessionStore.getState().session;
-      const org = session?.organizations.find((o) => o.id === session.currentOrgId);
-      const ws = session?.workspaces.find((w) => w.id === session.currentWorkspaceId);
-      router.push(org && ws ? `/orgs/${org.slug}/${ws.slug}` : '/orgs');
+      // currentWorkspaceId is null on a fresh login (no workspace header sent yet),
+      // so fall back to the first workspace in the current org. Never route to
+      // bare `/orgs` — there is no page there.
+      const org = session?.organizations.find((o) => o.id === session.currentOrgId) ?? session?.organizations[0];
+      const ws =
+        session?.workspaces.find((w) => w.id === session.currentWorkspaceId) ??
+        session?.workspaces.find((w) => w.orgId === org?.id);
+      if (org && ws) router.push(`/orgs/${org.slug}/${ws.slug}`);
+      else if (org) router.push(`/orgs/${org.slug}/workspaces`);
+      else router.push('/login');
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -49,7 +56,7 @@ export default function LoginPage() {
           label="Work email"
           rules={[{ required: true, message: 'Enter your email' }, { type: 'email', message: 'That email looks wrong' }]}
         >
-          <Input size="large" prefix={<MailOutlined />} placeholder="you@company.com" autoComplete="email" autoFocus />
+          <Input size="large" prefix={<MailOutlined />} placeholder="you@example.com" autoComplete="email" autoFocus />
         </Form.Item>
 
         <Form.Item name="password" label="Password" rules={[{ required: true, message: 'Enter your password' }]}>

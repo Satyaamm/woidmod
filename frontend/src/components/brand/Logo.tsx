@@ -48,7 +48,7 @@ export function Logo({ showWordmark = true }: { showWordmark?: boolean }) {
         </div>
       </div>
       {showWordmark && (
-        <Typography.Text className={styles.word}>VoiceAI</Typography.Text>
+        <Typography.Text className={styles.word}>woidmod</Typography.Text>
       )}
     </Flex>
   );

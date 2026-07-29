@@ -19,6 +19,18 @@ import { sessionRoutes } from './session.js';
 import { workspaceRoutes } from './workspaces.js';
 import { agentRoutes } from './agents.js';
 import { platformRoutes } from './platform.js';
+import { providerRoutes } from './providers.js';
+import { roleRoutes } from './roles.js';
+import { sessionVoiceRoutes } from './sessions.js';
+import { runtimeRoutes } from './runtime.js';
+import { knowledgeRoutes } from './knowledge.js';
+import { toolRoutes } from './tools.js';
+import { webhookRoutes } from './webhooks.js';
+import { evalRoutes } from './evals.js';
+import { sipRoutes } from './sip.js';
+import { campaignDispatchRoutes } from './campaign-dispatch.js';
+import { campaignPreviewRoutes } from './campaign-preview.js';
+import { dncListRoutes } from './dnc-lists.js';
 
 export const V1_VERSION = '1.0.0';
 
@@ -36,6 +48,18 @@ export function v1Router(container: Container) {
   v1.route('/', workspaceRoutes(container));
   v1.route('/', agentRoutes(container));
   v1.route('/', platformRoutes(container));
+  v1.route('/', providerRoutes(container));
+  v1.route('/', roleRoutes(container));
+  v1.route('/', sessionVoiceRoutes(container));
+  v1.route('/', runtimeRoutes(container));
+  v1.route('/', sipRoutes(container));
+  v1.route('/', campaignDispatchRoutes(container));
+  v1.route('/', campaignPreviewRoutes(container));
+  v1.route('/', dncListRoutes(container));
+  v1.route('/', knowledgeRoutes(container.services.knowledge));
+  v1.route('/', toolRoutes(container.services.tools));
+  v1.route('/', webhookRoutes(container.services.webhooks));
+  v1.route('/', evalRoutes(container.services.evals));
 
   return v1;
 }

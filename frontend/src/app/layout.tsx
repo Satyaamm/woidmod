@@ -4,7 +4,7 @@ import { ThemeProvider } from '@/theme/ThemeProvider';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: { default: 'VoiceAI', template: '%s · VoiceAI' },
+  title: { default: 'woidmod', template: '%s · woidmod' },
   description: 'Build, test and operate AI voice agents.',
 };
 

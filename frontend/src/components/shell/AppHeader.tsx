@@ -10,7 +10,7 @@ import {
   SearchOutlined,
   SunOutlined,
 } from '@ant-design/icons';
-import { Badge, Breadcrumb, Button, Flex, Input, Layout, Tooltip } from 'antd';
+import { Breadcrumb, Button, Flex, Input, Layout, Tooltip } from 'antd';
 import { createStyles } from 'antd-style';
 import { NAV_ITEMS } from '@/config/nav';
 import { useCurrentScope, useScope, wsPath } from '@/lib/scope';
@@ -90,6 +90,7 @@ export function AppHeader() {
           variant="filled"
           prefix={<SearchOutlined />}
           placeholder="Search calls, agents…"
+          autoComplete="off"
         />
         <ModeToggle workspaceId={workspace?.id} />
         <Tooltip title={theme === 'dark' ? 'Light theme' : 'Dark theme'}>
@@ -101,9 +102,21 @@ export function AppHeader() {
             onClick={toggleTheme}
           />
         </Tooltip>
-        <Badge dot offset={[-2, 2]}>
-          <Button type="text" size="small" aria-label="Notifications" icon={<BellOutlined />} />
-        </Badge>
+        {/*
+          The `dot` was hardcoded, so every user has always had a permanent red
+          unread badge over a button that opens nothing. There is no notification
+          store and no endpoint behind it. The dot is gone and the control says
+          what it is; it comes back when there is something real to count.
+        */}
+        <Tooltip title="Notifications aren’t built yet — call failures show on the Calls page, and delivery failures under Integrations.">
+          <Button
+            type="text"
+            size="small"
+            aria-label="Notifications"
+            icon={<BellOutlined />}
+            disabled
+          />
+        </Tooltip>
         <UserMenu />
       </Flex>
     </Layout.Header>

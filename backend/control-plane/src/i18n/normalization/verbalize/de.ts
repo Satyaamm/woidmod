@@ -28,6 +28,7 @@ import {
   minorUnits,
   pause,
   runRules,
+  spellIdentifier,
   speakEmail,
   speakUrl,
   type LocaleFormatter,
@@ -302,10 +303,8 @@ const extraRules: readonly Rule[] = [
       return min === 0 ? `${cardinal(h, ctx)} Uhr` : `${cardinal(h, ctx)} Uhr ${cardinal(min, ctx)}`;
     },
   },
-];
-
-const lateRules: readonly Rule[] = [
   {
+    // Must precede the generic number rule, or `10.` is spoken as "zehn Punkt".
     kind: 'ordinal',
     pattern: BARE_ORDINAL_RE,
     render: (m, ctx) => {
@@ -398,16 +397,7 @@ const formatter: LocaleFormatter = {
   },
 
   identifier(token, ctx) {
-    const p = pause(ctx, 300);
-    const clean = token.replace(/-/g, '');
-    return groupDigits(clean, ctx.digitGroupSize)
-      .map((chunk) =>
-        chunk
-          .split('')
-          .map((ch) => (/\d/.test(ch) ? digitWord(ch) : ch.toUpperCase()))
-          .join(' '),
-      )
-      .join(p);
+    return spellIdentifier(token, ctx, digitWord);
   },
 
   acronym(token, ctx) {
@@ -415,7 +405,6 @@ const formatter: LocaleFormatter = {
   },
 
   extraRules,
-  lateRules,
 };
 
 const rules = buildRules(formatter);

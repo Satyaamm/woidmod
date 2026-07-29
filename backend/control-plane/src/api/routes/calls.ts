@@ -13,6 +13,7 @@ import type { Hono } from 'hono';
 import { listCallsQuery } from '../../domain/call-schemas.js';
 import { requireWorkspace, type Principal, type TenantScope } from '../../domain/tenant.js';
 import type { CallService } from '../../services/call-service.js';
+import type { CallIngestService } from '../../services/call-ingest.js';
 
 /** Set by the auth middleware in `server.ts`. */
 type Vars = {
@@ -25,7 +26,7 @@ type Vars = {
  * service, and saying so keeps them testable without a composition root.
  */
 export interface CallRoutesDeps {
-  services: { calls: CallService };
+  services: { calls: CallService; callIngest: CallIngestService };
 }
 
 export function registerCallRoutes(
@@ -48,5 +49,16 @@ export function registerCallRoutes(
   app.get('/v1/calls/:id/trace', async (c) => {
     const scope = requireWorkspace(c.get('scope'));
     return c.json(await container.services.calls.getTrace(scope, c.req.param('id')));
+  });
+
+  // Write side: the orchestrator streams pipeline event batches here during a call.
+  // Each batch upserts the Call + trace, so a live call shows up in the list,
+  // Analytics and the trace viewer. Fire-and-forget on the worker's side.
+  app.post('/v1/calls/:id/events', async (c) => {
+    const scope = requireWorkspace(c.get('scope'));
+    const body = (await c.req.json().catch(() => ({}))) as { events?: unknown };
+    const events = Array.isArray(body.events) ? (body.events as Array<{ type: string; tMs?: number }>) : [];
+    await container.services.callIngest.ingest(scope, c.req.param('id'), events);
+    return c.json({ ok: true });
   });
 }

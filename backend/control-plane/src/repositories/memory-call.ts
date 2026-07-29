@@ -39,6 +39,7 @@ export class MemoryCallRepository implements CallRepository {
       .filter((c) => (opts.agentId ? c.agentId === opts.agentId : true))
       .filter((c) => (opts.outcome ? c.outcome === opts.outcome : true))
       .filter((c) => (opts.status ? c.status === opts.status : true))
+      .filter((c) => (opts.mode ? c.mode === opts.mode : true))
       .filter((c) => (opts.minLatencyMs === undefined ? true : c.p95LatencyMs >= opts.minLatencyMs))
       .filter((c) => matches(opts.search, c.id, c.agentName, c.fromNumber, c.toNumber))
       // Newest first — the call log is a debugging queue, not an archive.

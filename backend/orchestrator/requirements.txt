@@ -1,0 +1,32 @@
+# Pinned exactly. LiveKit Agents 1.6.x is mid-rename (WorkerOptions -> AgentServer,
+# turn_handling kwargs deprecated toward v2.0) and the turn-detector protocols we
+# implement are underscore-private. A float here is a broken call, not a warning.
+livekit-agents==1.6.6
+livekit-plugins-silero==1.6.6
+# BYOK provider plugins — the worker builds whichever the agent's pipeline selects
+# (see src/providers.py). Add the plugin here to make a new vendor runnable.
+livekit-plugins-deepgram==1.6.6
+livekit-plugins-anthropic==1.6.6
+livekit-plugins-cartesia==1.6.6
+livekit-plugins-openai==1.6.6
+livekit-plugins-elevenlabs==1.6.6
+livekit-plugins-google==1.6.6
+livekit-plugins-assemblyai==1.6.6
+# Enterprise BYOK paths. `azure` carries the Speech SDK (STT + TTS); `aws` carries
+# Bedrock; Vertex needs no package of its own — it is the google plugin in
+# vertexai=True mode.
+livekit-plugins-azure==1.6.6
+livekit-plugins-aws==1.6.6
+livekit-plugins-speechmatics==1.6.6
+livekit-plugins-soniox==1.6.6
+livekit-plugins-rime==1.6.6
+# Indian-language STT (Saarika) and TTS (Bulbul).
+livekit-plugins-sarvam==1.6.6
+livekit-plugins-inworld==1.6.6
+livekit-plugins-fishaudio==1.6.6
+# NOT listed: livekit-plugins-playai. LiveKit stopped publishing it at 1.2.x, which
+# cannot coexist with livekit-agents 1.6.6. PlayHT credentials are still storable
+# and testable; `build_tts` refuses the call with that reason rather than letting
+# an opaque ImportError surface mid-conversation.
+python-dotenv>=1.0
+aiohttp>=3.9

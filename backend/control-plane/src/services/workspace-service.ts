@@ -8,6 +8,7 @@
  */
 
 import { newId } from '../domain/ids.js';
+import { deconflictSlug } from '../domain/reserved-slugs.js';
 import {
   complianceProfileSchema,
   spendCapsSchema,
@@ -28,25 +29,84 @@ type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceInput>;
 function authorizedWorkspaceScope(scope: TenantScope, workspaceId: string): TenantScope {
   return { ...scope, workspaceId } as unknown as TenantScope;
 }
-import { ConflictError, NotFoundError, type ListOptions, type OrganizationRepository, type WorkspaceRepository } from '../repositories/types.js';
+import { ConflictError, NotFoundError, type AgentRepository, type ListOptions, type OrganizationRepository, type WorkspaceRepository } from '../repositories/types.js';
+import type { CallRepository } from '../repositories/call-repository.js';
+import type { PhoneNumberRepository } from '../repositories/telephony-repository.js';
 import { defaultComplianceProfile, defaultRegionFor, REGION_META_BLOC } from './region.js';
 
 export class WorkspaceService {
   constructor(
     private readonly workspaces: WorkspaceRepository,
     private readonly orgs: OrganizationRepository,
+    /**
+     * Agents, numbers and calls — for the per-workspace counters.
+     *
+     * Optional so existing constructions keep working; without them the counters
+     * stay at their stored values rather than throwing.
+     */
+    private readonly counts?: {
+      agents: AgentRepository;
+      numbers: PhoneNumberRepository;
+      calls: CallRepository;
+    },
   ) {}
 
   async list(scope: TenantScope, opts?: ListOptions) {
     require_(scope, 'workspace:read');
-    return this.workspaces.list(scope, opts);
+    const page = await this.workspaces.list(scope, opts);
+    return { ...page, items: await Promise.all(page.items.map((w) => this.withStats(scope, w))) };
   }
 
   async get(scope: TenantScope, workspaceId: string): Promise<Workspace> {
     require_(scope, 'workspace:read');
     const ws = await this.workspaces.get(scope, workspaceId);
     if (!ws) throw new NotFoundError('workspace', workspaceId);
-    return ws;
+    return this.withStats(scope, ws);
+  }
+
+  /**
+   * The three counters on the workspace card.
+   *
+   * `stats` is written as `{ agentCount: 0, numberCount: 0, callsToday: 0 }` by
+   * `create` and nothing has ever updated it, so the Workspaces page showed
+   * "0 agents · 0 numbers · 0 calls today" for every workspace regardless of what
+   * was in it. Counted from the source collections instead — a denormalised
+   * counter has to be maintained on every create and delete path and is silently
+   * wrong the first time one is missed.
+   */
+  private async withStats(scope: TenantScope, workspace: Workspace): Promise<Workspace> {
+    if (!this.counts) return workspace;
+
+    const inWorkspace = { ...scope, workspaceId: workspace.id } as Parameters<
+      AgentRepository['list']
+    >[0];
+
+    try {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      const [agents, numbers, calls] = await Promise.all([
+        this.counts.agents.list(inWorkspace, { page: 1, pageSize: 1 }),
+        this.counts.numbers.list(inWorkspace, { page: 1, pageSize: 1 }),
+        this.counts.calls.list(inWorkspace, { page: 1, pageSize: 1000 }),
+      ]);
+
+      return {
+        ...workspace,
+        stats: {
+          // `total` is the count the repository reports for the whole filter, so
+          // a pageSize of 1 is enough — no need to fetch rows to count them.
+          agentCount: agents.total,
+          numberCount: numbers.total,
+          callsToday: calls.items.filter(
+            (k) => new Date(k.startedAt).getTime() >= startOfToday.getTime(),
+          ).length,
+        },
+      };
+    } catch {
+      // Counters must never take down the workspace list.
+      return workspace;
+    }
   }
 
   async create(scope: TenantScope, input: CreateWorkspaceInput): Promise<Workspace> {
@@ -153,12 +213,19 @@ export class WorkspaceService {
   }
 }
 
+/**
+ * Derives a slug from a name. Deconflicts rather than rejecting: this path has no
+ * user to show an error to, and a business unit genuinely called "Settings" must
+ * still be creatable — it just becomes `settings-ws`.
+ */
 function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'workspace';
+  const base =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'workspace';
+  return deconflictSlug('workspace', base);
 }
 
 // Local import guard to avoid a cycle with compliance.ts

@@ -7,13 +7,19 @@
 
 import type { Region } from '../domain/schemas.js';
 
-export type DataBloc = 'US' | 'EU';
+/**
+ * Where data physically sits. India is its own bloc, not a rounding error on US:
+ * an Indian vendor satisfies neither US nor EU residency, and declaring one to make
+ * it selectable would be a lie the eligibility gate then enforces.
+ */
+export type DataBloc = 'US' | 'EU' | 'IN';
 
 export const REGION_META_BLOC: Record<Region, DataBloc> = {
   'us-east': 'US',
   'us-west': 'US',
   'eu-west': 'EU',
   'eu-central': 'EU',
+  'ap-south': 'IN',
 };
 
 export const REGION_OPTIONS: Array<{
@@ -28,6 +34,9 @@ export const REGION_OPTIONS: Array<{
   // Frankfurt matters specifically: many German customers require in-country
   // storage, not merely in-EU. docs/13 §5.
   { value: 'eu-central', label: 'EU Central (Frankfurt)', country: 'DE', bloc: 'EU' },
+  // India: required for the Indian-language vendors, whose processing is in-country
+  // and which are therefore ineligible for a US- or EU-pinned workspace.
+  { value: 'ap-south', label: 'India (Mumbai)', country: 'IN', bloc: 'IN' },
 ];
 
 export { defaultComplianceProfile, defaultRegionFor, isEu, taxIdLabelFor } from './compliance.js';

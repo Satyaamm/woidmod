@@ -52,7 +52,15 @@ jobs:
       - name: Block committed secrets
         run: |
           set -e
-          if git diff --name-only origin/main...HEAD 2>/dev/null | grep -Ei '(^|/)\.env($|\.)|\.(pem|key|p12|pfx)$'; then
+          # `.env.example` is a TEMPLATE and is meant to be committed — the setup
+          # flow is "copy .env.example to .env". The previous pattern matched it
+          # (`\.env($|\.)` accepts `.env` followed by a dot), so any PR that touched
+          # the template failed a check named "secret detected" with no secret in it.
+          # A gate that cries wolf on the one file everyone edits gets ignored, which
+          # costs more than the check earns.
+          if git diff --name-only origin/main...HEAD 2>/dev/null \
+            | grep -Ei '(^|/)\.env($|\.)|\.(pem|key|p12|pfx)$' \
+            | grep -vEi '\.env\.(example|sample|template)$'; then
             echo "::error::Secret-bearing file detected in this PR."
             exit 1
           fi

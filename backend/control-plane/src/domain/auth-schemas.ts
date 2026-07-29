@@ -84,6 +84,20 @@ export const loginInput = z.object({
   password: z.string().min(1).max(200),
   /** Optional org anchor for users who belong to several orgs. */
   orgId: z.string().min(3).max(64).optional(),
+  /** TOTP code, supplied on the second step when the account has MFA enabled. */
+  mfaCode: z.string().regex(/^\d{6}$/).optional(),
+});
+
+/** A 6-digit TOTP code — confirming or disabling MFA. */
+export const mfaCodeInput = z.object({ code: z.string().regex(/^\d{6}$/) });
+
+/** Start a password reset. Always answered identically — no account enumeration. */
+export const forgotPasswordInput = z.object({ email: emailSchema });
+
+/** Complete a reset with the signed token from the email (or dev response). */
+export const resetPasswordInput = z.object({
+  token: z.string().min(1).max(2000),
+  password: passwordSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -127,7 +141,7 @@ export const userDetailsInput = z
 
 export const orgBillingDetailsInput = z
   .object({
-    /** "Acme Technologies GmbH" — what the invoice says, vs `name` which is what the UI says. */
+    /** "Example Technologies GmbH" — what the invoice says, vs `name` which is what the UI says. */
     legalName: z.string().trim().min(1).max(200).optional(),
     address: postalAddressSchema.optional(),
     /** GSTIN / VAT / EIN — the label follows the country, see compliance.taxIdLabelFor. */
@@ -143,6 +157,31 @@ export const orgBillingDetailsInput = z
   .refine((v) => Object.values(v).some((x) => x !== undefined), {
     message: 'provide at least one field to update',
   });
+
+/**
+ * General org settings update (the org settings page), as distinct from billing
+ * details. Deliberately omits `slug`, `country`, `currency`, `verifiedDomains`, and
+ * `parentOrgId` — those are identity/routing/residency facts changed through
+ * dedicated, audited flows, never a free-form settings save.
+ */
+export const orgDetailsInput = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    legalName: z.string().trim().min(1).max(200).optional(),
+    website: z.string().url().max(2048).optional(),
+    industry: z.string().trim().max(80).optional(),
+    size: z.enum(['1-10', '11-50', '51-200', '201-1000', '1000+']).optional(),
+    timezone: z.string().trim().min(1).max(64).optional(),
+    logoUrl: z.string().url().max(2048).optional(),
+    address: postalAddressSchema.optional(),
+    phone: phoneNumberValueSchema.optional(),
+  })
+  .strict()
+  .refine((v) => Object.values(v).some((x) => x !== undefined), {
+    message: 'provide at least one field to update',
+  });
+
+export type OrgDetailsInput = z.infer<typeof orgDetailsInput>;
 
 // ---------------------------------------------------------------------------
 // 5. Invitations

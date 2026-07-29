@@ -49,6 +49,23 @@ export const callSchema = z.object({
   /** Median end-of-speech -> first-audio across this call's agent turns. */
   medianLatencyMs: z.number().nonnegative(),
   p95LatencyMs: z.number().nonnegative(),
+  /**
+   * Median per-stage split of that latency, for the stages the worker actually
+   * instruments.
+   *
+   * Only present where measured. `llmTtftMs` comes from `llm.first_token`;
+   * `ttsTtfbMs` is `tts.first_audio - llm.first_token`. Endpointing, ASR-finalize
+   * and network are NOT emitted by the worker, so they are absent here rather
+   * than defaulted — the Analytics stage breakdown used to render a hardcoded
+   * design budget as if it were a measurement, and an absent field is the only
+   * way the UI can tell "0 ms" from "nobody measured this".
+   */
+  stageLatencyMs: z
+    .object({
+      llmTtftMs: z.number().nonnegative().optional(),
+      ttsTtfbMs: z.number().nonnegative().optional(),
+    })
+    .optional(),
   costUsd: z.number().nonnegative(),
   bargeInCount: z.number().int().nonnegative(),
   /** Which immutable agent version actually ran (docs/03 6.7). */

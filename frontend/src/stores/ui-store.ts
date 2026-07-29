@@ -41,6 +41,6 @@ export const useUiStore = create<UiState>()(
       getMode: (workspaceId) => (workspaceId ? (get().modeByWorkspace[workspaceId] ?? 'test') : 'test'),
       dismissProfileCard: () => set({ profileCardDismissed: true }),
     }),
-    { name: 'voiceai.ui' },
+    { name: 'woidmod.ui' },
   ),
 );

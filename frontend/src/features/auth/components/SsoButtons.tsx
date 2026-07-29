@@ -27,6 +27,12 @@ function MicrosoftMark() {
 }
 
 export function SsoButtons({ label = 'or continue with' }: { label?: string }) {
+  // SSO is wired (backend /auth/sso/:provider). The buttons only *do* something when
+  // the operator has set the OAuth client env vars; otherwise the provider returns a
+  // clear "not configured" — so they're safe to show.
+  const SSO_ENABLED = true;
+  if (!SSO_ENABLED) return null;
+
   return (
     <>
       <Flex gap={10}>

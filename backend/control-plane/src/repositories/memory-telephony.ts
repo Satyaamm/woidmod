@@ -236,6 +236,11 @@ export class MemoryLeadRepository implements LeadRepository {
     }
     return counts;
   }
+
+  async isSuppressed(scope: WorkspaceScope, e164: string) {
+    // Across every campaign in the workspace — see the interface note.
+    return this.scoped(scope).some((l) => l.e164 === e164 && l.onDncList);
+  }
 }
 
 export class MemoryDispatchAuditRepository implements DispatchAuditRepository {

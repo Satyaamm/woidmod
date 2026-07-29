@@ -72,6 +72,14 @@ export interface LeadRepository {
     scope: WorkspaceScope,
     campaignId: string,
   ): Promise<Record<Lead['lifecycle'], number>>;
+  /**
+   * Is this number on the org's own suppression list?
+   *
+   * Workspace-wide and campaign-independent on purpose: "do not call me again" is
+   * addressed to the business, not to the campaign that happened to reach them, so
+   * a suppression recorded in one campaign must stop every other one too.
+   */
+  isSuppressed(scope: WorkspaceScope, e164: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +122,13 @@ export interface DispatchAuditEntry {
     readonly maxAttemptsPerLead: number;
     readonly consentModel: string;
   };
+  /**
+   * The platform ruleset in force, and what it resolved to for this callee.
+   * Optional because rows written before migration 0007 genuinely have no version
+   * to point at — inventing one would be worse than admitting the gap.
+   */
+  readonly rulesetVersion?: string | null;
+  readonly ruleSnapshot?: Record<string, unknown> | null;
 }
 
 export interface DispatchAuditRepository {

@@ -26,15 +26,27 @@ export interface SeedResult {
   }>;
 }
 
+// Neutral placeholder domains — no invented brand names anywhere in the product.
+// Two distinct domains, not one: the org name and slug are DERIVED from the domain
+// by the real signup path, so a shared domain would make both seeded orgs collide
+// on the same name and only differ by a slug suffix.
 const ACCOUNTS = [
-  { email: 'founder@acme-eu.example', country: 'DE', timezone: 'Europe/Berlin', locale: 'de-DE' },
-  { email: 'founder@acme-us.example', country: 'US', timezone: 'America/New_York', locale: 'en-US' },
+  { email: 'first.user@demo-eu.example', country: 'DE', timezone: 'Europe/Berlin', locale: 'de-DE' },
+  { email: 'second.user@demo-us.example', country: 'US', timezone: 'America/New_York', locale: 'en-US' },
 ];
 
 export async function seed(c: Container): Promise<SeedResult> {
   const accounts: SeedResult['accounts'] = [];
 
   for (const spec of ACCOUNTS) {
+    // Idempotent: with Postgres the seed runs on every boot, so an account seeded
+    // last time must not collide. In-memory starts empty, so this is a no-op there.
+    const existing = await c.repositories.users.findByEmail(spec.email);
+    if (existing) {
+      c.logger.info('seed account already present, skipping', { email: spec.email });
+      continue;
+    }
+
     const result = await c.services.auth.signup({
       email: spec.email,
       password: 'dev-password-not-for-production',

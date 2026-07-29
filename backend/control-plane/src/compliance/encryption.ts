@@ -17,6 +17,7 @@
  * in without touching callers. In production the master key NEVER leaves the KMS.
  */
 
+import { isProduction } from '../config.js';
 import {
   createCipheriv,
   createDecipheriv,
@@ -190,7 +191,7 @@ export class LocalKms implements KeyManagementService {
   private readonly masterKey: Buffer;
 
   constructor(masterKeyHex?: string) {
-    if (process.env.NODE_ENV === 'production' && !masterKeyHex) {
+    if (isProduction && !masterKeyHex) {
       throw new Error(
         'LocalKms must not be used in production — configure AWS KMS, GCP KMS, or Vault Transit',
       );

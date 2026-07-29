@@ -16,7 +16,7 @@ The repositories that use it are in `src/repositories/postgres/`.
 ## Running migrations
 
 ```bash
-export DATABASE_URL='postgres://app_migrator@localhost:5432/voiceai'
+export DATABASE_URL='postgres://app_migrator@localhost:5432/woidmod'
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/db/migrations/0001_init.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/db/rls.sql

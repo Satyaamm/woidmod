@@ -3,7 +3,8 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Layout, Menu, Tooltip, Typography } from 'antd';
+import { Layout, Menu, Tooltip } from 'antd';
+import { BankOutlined, RightOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { createStyles } from 'antd-style';
 import { Logo } from '@/components/brand/Logo';
@@ -43,6 +44,28 @@ const useStyles = createStyles(({ token, css }) => ({
     margin-top: auto;
     padding: 12px;
     border-top: 1px solid ${token.colorBorderSecondary};
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  `,
+  orgLink: css`
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: ${token.borderRadius}px;
+    color: ${token.colorTextSecondary};
+    font-size: 13px;
+    transition: background 0.15s, color 0.15s;
+    &:hover {
+      background: ${token.colorFillTertiary};
+      color: ${token.colorText};
+    }
+  `,
+  orgChevron: css`
+    margin-left: auto;
+    font-size: 10px;
+    color: ${token.colorTextQuaternary};
   `,
   inner: css`
     display: flex;
@@ -106,8 +129,8 @@ export function SideNav() {
     >
       <div className={styles.inner}>
         <div className={styles.brand}>
-          <Tooltip title={collapsed ? 'VoiceAI' : undefined} placement="right">
-            <Link href={base} aria-label="VoiceAI home">
+          <Tooltip title={collapsed ? 'woidmod' : undefined} placement="right">
+            <Link href={base} aria-label="woidmod home">
               <Logo showWordmark={!collapsed} />
             </Link>
           </Tooltip>
@@ -116,14 +139,21 @@ export function SideNav() {
         <Menu className={styles.menu} mode="inline" selectedKeys={[selectedKey]} items={items} />
 
         <div className={styles.footer}>
-          {collapsed ? null : (
-            <>
-              <SpendMeter />
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                Mock data · backend offline
-              </Typography.Text>
-            </>
-          )}
+          {/*
+            Entry point to the organization context. Deliberately below the divider
+            and visually distinct — switching context is a different kind of action
+            from navigating within a workspace.
+          */}
+          {can('org:read') ? (
+            <Tooltip title={collapsed ? 'Organization' : undefined} placement="right">
+              <Link href={`/orgs/${scope.orgSlug}/usage`} className={styles.orgLink}>
+                <BankOutlined />
+                {collapsed ? null : <span>Organization</span>}
+                {collapsed ? null : <RightOutlined className={styles.orgChevron} />}
+              </Link>
+            </Tooltip>
+          ) : null}
+          {collapsed ? null : <SpendMeter />}
         </div>
       </div>
     </Layout.Sider>

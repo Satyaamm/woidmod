@@ -1,0 +1,116 @@
+# Local development infrastructure.
+#
+# The stateful backing services only. The control plane, worker and dashboard run
+# from source with hot reload — those are the things being edited.
+#
+# Provider API keys are NOT here and never will be: they are BYOK, stored encrypted
+# per tenant in Postgres. The only secrets in this file are local dev defaults for
+# infrastructure the customer never sees.
+
+name: woidmod
+
+services:
+  # --- Media transport ------------------------------------------------------
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports:
+      - '7880:7880'       # WS signalling + HTTP API
+      - '7881:7881'       # WebRTC/TCP fallback
+      - '7882:7882/udp'   # WebRTC/UDP (normal path)
+    environment:
+      LIVEKIT_KEYS: 'devkey: secret'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:7880']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Primary datastore ----------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: woidmod
+      POSTGRES_PASSWORD: woidmod
+      POSTGRES_DB: woidmod
+    ports:
+      # Host 5433: a natively-installed Postgres binds 127.0.0.1:5432 on many dev
+      # machines and wins over Docker's wildcard bind, so `localhost:5432` would
+      # silently reach the wrong server. Container-side stays 5432.
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Init scripts run once, on first boot of an empty volume, in filename order.
+      # Each file is mounted INDIVIDUALLY (not the folder) so /docker-entrypoint-initdb.d
+      # stays the image's own writable dir — mounting a folder :ro and then nesting a
+      # file inside it fails on Docker Desktop / VirtioFS ("read-only file system").
+      # Add a line here when you add a migration. rls.sql sorts last (zzz_) on purpose:
+      # it defines roles, policies, and the SECURITY DEFINER lookup functions the repos call.
+      - ./backend/control-plane/src/db/migrations/0001_init.sql:/docker-entrypoint-initdb.d/0001_init.sql:ro
+      - ./backend/control-plane/src/db/migrations/0002_auth_byok_rbac.sql:/docker-entrypoint-initdb.d/0002_auth_byok_rbac.sql:ro
+      - ./backend/control-plane/src/db/migrations/0003_operational_data.sql:/docker-entrypoint-initdb.d/0003_operational_data.sql:ro
+      - ./backend/control-plane/src/db/migrations/0004_agent_flow.sql:/docker-entrypoint-initdb.d/0004_agent_flow.sql:ro
+      - ./backend/control-plane/src/db/migrations/0005_call_persistence.sql:/docker-entrypoint-initdb.d/0005_call_persistence.sql:ro
+      - ./backend/control-plane/src/db/migrations/0006_mfa.sql:/docker-entrypoint-initdb.d/0006_mfa.sql:ro
+      - ./backend/control-plane/src/db/migrations/0007_jurisdiction_ruleset.sql:/docker-entrypoint-initdb.d/0007_jurisdiction_ruleset.sql:ro
+      - ./backend/control-plane/src/db/migrations/0008_tenant_teardown.sql:/docker-entrypoint-initdb.d/0008_tenant_teardown.sql:ro
+      - ./backend/control-plane/src/db/migrations/0009_dnc_lists.sql:/docker-entrypoint-initdb.d/0009_dnc_lists.sql:ro
+      - ./backend/control-plane/src/db/migrations/0010_ap_south_region.sql:/docker-entrypoint-initdb.d/0010_ap_south_region.sql:ro
+      - ./backend/control-plane/src/db/rls.sql:/docker-entrypoint-initdb.d/zzz_rls.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U woidmod -d woidmod']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Ephemeral state + rate-limit buckets ---------------------------------
+  redis:
+    image: redis:7-alpine
+    # Ephemeral by design — call state snapshots and token buckets, never the
+    # source of truth mid-turn (docs/01 §7). No persistence needed locally.
+    command: redis-server --save '' --appendonly no
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Object storage (S3-compatible) ---------------------------------------
+  # For call recordings and transcripts. S3-compatible so the same code runs
+  # against AWS S3 / Cloudflare R2 in production with only credentials changing.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: woidmod
+      MINIO_ROOT_PASSWORD: woidmod-dev-secret
+    ports:
+      - '9000:9000'   # S3 API
+      - '9001:9001'   # web console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Creates the single storage bucket once MinIO is up, then exits. Recordings and
+  # exports live under key prefixes (`recordings/`, `exports/`) inside this one bucket.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 woidmod woidmod-dev-secret &&
+      mc mb --ignore-existing local/woidmod &&
+      echo 'bucket ready';
+      "
+
+volumes:
+  pgdata:
+  miniodata:

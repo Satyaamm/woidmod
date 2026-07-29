@@ -34,6 +34,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -47,6 +48,9 @@ import type {
   OrgRole,
   WorkspaceRole,
 } from '../domain/schemas.js';
+import type { Campaign, Lead, PhoneNumber } from '../domain/telephony-schemas.js';
+import type { Call, CallTrace } from '../domain/call-schemas.js';
+import type { AgentModality, FlowSpec } from '../domain/flow-schema.js';
 
 // ---------------------------------------------------------------------------
 // Shared column helpers
@@ -237,6 +241,17 @@ export const orgMemberships = pgTable(
     orgId: text('org_id').notNull(),
     userId: text('user_id').notNull(),
     role: text('role').$type<OrgRole>().notNull(),
+    /**
+     * Explicit per-workspace grants, stored as a jsonb value object rather than
+     * denormalised into `workspace_memberships`. It is a short list, always read
+     * with the membership, and the record contract (OrgMembershipRecord) treats it
+     * as one unit — same reasoning as every other jsonb value object here.
+     */
+    workspaceRoles: jsonb('workspace_roles')
+      .$type<{ workspaceId: string; role: WorkspaceRole }[]>()
+      .notNull()
+      .default([]),
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true, mode: 'date' }),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -277,6 +292,11 @@ export const invitations = pgTable(
     email: text('email').notNull(),
     orgRole: text('org_role').$type<OrgRole>().notNull(),
     workspaceRole: text('workspace_role').$type<WorkspaceRole>(),
+    /** Full set of workspace grants to apply at accept time (InvitationRecord). */
+    workspaceGrants: jsonb('workspace_grants')
+      .$type<{ workspaceId: string; role: WorkspaceRole }[]>()
+      .notNull()
+      .default([]),
     tokenHash: text('token_hash').notNull(),
     invitedByUserId: text('invited_by_user_id').notNull(),
     status: text('status')
@@ -286,6 +306,7 @@ export const invitations = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true, mode: 'date' }),
     acceptedByUserId: text('accepted_by_user_id'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -345,9 +366,12 @@ export const agents = pgTable(
     description: text('description').notNull().default(''),
     language: text('language').notNull().default('en-US'),
     prompt: text('prompt').notNull(),
+    modality: text('modality').$type<AgentModality>().notNull().default('voice'),
     voice: jsonb('voice').$type<VoiceConfigJson>().notNull(),
     pipeline: jsonb('pipeline').$type<PipelineConfigJson>().notNull(),
     tools: jsonb('tools').$type<ToolConfigJson[]>().notNull().default([]),
+    /** The visual builder's compiled flow graph; null = pure prompt mode. */
+    flow: jsonb('flow').$type<FlowSpec>(),
     /**
      * Rolled-up counters. Denormalised on purpose: the dashboard reads them on every
      * agent list render and computing them from `calls` per row is an N+1 aggregate.
@@ -416,6 +440,13 @@ export const phoneNumbers = pgTable(
       .notNull()
       .default('pending'),
     createdAt: createdAt(),
+    /**
+     * Full domain object (jsonb-envelope). The scalar columns above are the indexed /
+     * RLS projection of this; the repository reads the object from here. The domain
+     * model (numberType, capabilities, carrier, reputation…) is richer than the 0001
+     * columns, so this is the source of truth and the columns are for querying.
+     */
+    data: jsonb('data').$type<PhoneNumber>().notNull(),
   },
   (t) => ({
     e164Uq: uniqueIndex('phone_numbers_e164_uq').on(t.e164),
@@ -439,6 +470,8 @@ export const campaigns = pgTable(
     schedule: jsonb('schedule').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    /** Full domain object (jsonb-envelope); scalar columns are its query projection. */
+    data: jsonb('data').$type<Campaign>().notNull(),
   },
   (t) => ({
     wsIdx: index('campaigns_ws_updated_idx').on(t.workspaceId, t.updatedAt),
@@ -465,6 +498,8 @@ export const leads = pgTable(
       .default('pending'),
     lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true, mode: 'date' }),
     createdAt: createdAt(),
+    /** Full domain object (jsonb-envelope); scalar columns are its query projection. */
+    data: jsonb('data').$type<Lead>().notNull(),
   },
   (t) => ({
     campaignStatusIdx: index('leads_campaign_status_idx').on(t.campaignId, t.status),
@@ -564,6 +599,53 @@ export const turns = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Runtime call log — jsonb-envelope, written by the orchestrator via CallIngest.
+//
+// The `calls`/`turns` tables above are the earlier normalised/ClickHouse-shaped
+// design. The runtime call log the dashboard actually reads uses the same
+// jsonb-envelope pattern as the operational tables (phone_numbers, campaigns):
+// `data` is the full domain object; the scalar columns are its query/RLS
+// projection. Kept as its own table so it is free of the legacy NOT-NULL columns.
+// ---------------------------------------------------------------------------
+
+export const callRecords = pgTable(
+  'call_records',
+  {
+    id: id(),
+    orgId: text('org_id').notNull(),
+    workspaceId: text('workspace_id').notNull(),
+    agentId: text('agent_id').notNull(),
+    status: text('status').notNull(),
+    direction: text('direction').notNull(),
+    mode: text('mode').$type<Mode>().notNull().default('test'),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull(),
+    createdAt: createdAt(),
+    /** Full domain `Call` (jsonb-envelope); scalar columns above are its projection. */
+    data: jsonb('data').$type<Call>().notNull(),
+  },
+  (t) => ({
+    wsStartedIdx: index('call_records_ws_started_idx').on(t.workspaceId, t.startedAt),
+    wsAgentIdx: index('call_records_ws_agent_idx').on(t.workspaceId, t.agentId),
+  }),
+);
+
+export const callTraces = pgTable(
+  'call_traces',
+  {
+    /** One trace per call — the call id is the primary key. */
+    callId: text('call_id').primaryKey(),
+    orgId: text('org_id').notNull(),
+    workspaceId: text('workspace_id').notNull(),
+    createdAt: createdAt(),
+    /** Full domain `CallTrace` (jsonb-envelope). */
+    data: jsonb('data').$type<CallTrace>().notNull(),
+  },
+  (t) => ({
+    wsIdx: index('call_traces_ws_idx').on(t.workspaceId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // Audit log
 // ---------------------------------------------------------------------------
 
@@ -600,6 +682,253 @@ export const auditLog = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Auth material — GLOBAL, not tenant-scoped.
+//
+// These three are read BEFORE a tenant is known (login, session resolution, code
+// verification), so — like `users` — they carry no `org_id` RLS policy. Keyed by
+// user_id / id and accessed through `unscoped()`. Kept out of `TENANT_SCOPED_TABLES`
+// on purpose; `rls.sql` gives them a permissive policy so the audit shows a decision.
+// ---------------------------------------------------------------------------
+
+/**
+ * Password material, one row per user, split from `users` because a user row is read
+ * on nearly every request and a credential on exactly one (login). scrypt params are
+ * stored per-row so a future rehash can be staged without a flag day.
+ */
+export const userCredentials = pgTable('user_credentials', {
+  userId: text('user_id').primaryKey(),
+  algorithm: text('algorithm').$type<'scrypt'>().notNull().default('scrypt'),
+  salt: text('salt').notNull(),
+  hash: text('hash').notNull(),
+  params: jsonb('params').$type<{ N: number; r: number; p: number; keylen: number }>().notNull(),
+  /** TOTP MFA secret (base32); null until the user enrolls. */
+  totpSecret: text('totp_secret'),
+  /** True once a code is confirmed — only then is a login code required. */
+  mfaEnabled: boolean('mfa_enabled').notNull().default(false),
+  updatedAt: updatedAt(),
+});
+
+/** Email verification codes. Stores the HMAC of the 6-digit code, never the code. */
+export const emailVerificationCodes = pgTable(
+  'email_verification_codes',
+  {
+    id: id(),
+    userId: text('user_id').notNull(),
+    email: text('email').notNull(),
+    codeHash: text('code_hash').notNull(),
+    purpose: text('purpose').$type<'email_verification'>().notNull().default('email_verification'),
+    attempts: integer('attempts').notNull().default(0),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // findLatestForUser: newest unconsumed code for a user.
+    userCreatedIdx: index('email_verification_user_created_idx').on(t.userId, t.createdAt),
+  }),
+);
+
+/**
+ * Sessions. Carries `org_id` (the session is anchored to one org; switching orgs
+ * mints a new session) but is looked up by `id` pre-authorization, so it is global,
+ * not tenant-policied — a tenant policy would make the pre-auth `findById` return
+ * zero rows.
+ */
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: id(),
+    userId: text('user_id').notNull(),
+    orgId: text('org_id').notNull(),
+    userAgent: text('user_agent'),
+    ip: text('ip'),
+    createdAt: createdAt(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+  },
+  (t) => ({
+    // revokeAllForUser: every live session for a user.
+    userIdx: index('sessions_user_idx').on(t.userId),
+  }),
+);
+
+/**
+ * Per-tenant data-encryption keys (wrapped under the KMS master key). This is what
+ * makes envelope encryption + crypto-shredding work across restarts: without it the
+ * DEKs live only in memory and every BYOK secret becomes undecryptable after a
+ * reboot. GLOBAL-accessed — `getById(keyId)` runs during decrypt, outside any tenant
+ * transaction — so it is not tenant-RLS-policied (permissive, like sessions).
+ * `wrapped_key` is ciphertext; `destroyed_at` set = crypto-shredded (GDPR Art. 17).
+ */
+export const tenantKeys = pgTable(
+  'tenant_keys',
+  {
+    keyId: text('key_id').primaryKey(),
+    orgId: text('org_id').notNull(),
+    wrappedKey: text('wrapped_key').notNull(),
+    createdAt: createdAt(),
+    destroyedAt: timestamp('destroyed_at', { withTimezone: true, mode: 'date' }),
+    rotatedFrom: text('rotated_from'),
+  },
+  (t) => ({
+    // getActive(orgId): newest non-destroyed key for an org.
+    orgCreatedIdx: index('tenant_keys_org_created_idx').on(t.orgId, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// BYOK provider credentials, custom roles, dispatch audit — TENANT-scoped.
+// ---------------------------------------------------------------------------
+
+/**
+ * Bring-your-own-key provider credentials. `config` is non-secret routing (region,
+ * deployment, resource) and is safe to display; `secrets` holds per-field encryption
+ * envelopes — ciphertext only, never returned to a client. Crypto-shredding the
+ * tenant data key renders `secrets` permanently unreadable, which is how a GDPR
+ * erasure also erases stored keys. `workspace_id` NULL = available org-wide.
+ */
+export const providerCredentials = pgTable(
+  'provider_credentials',
+  {
+    id: id(),
+    orgId: text('org_id').notNull(),
+    workspaceId: text('workspace_id'),
+    kind: text('kind').$type<'stt' | 'llm' | 'tts'>().notNull(),
+    providerKey: text('provider_key').notNull(),
+    name: text('name').notNull(),
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    /** Per-field encryption envelopes. `$type` is intentionally loose — the envelope
+     *  shape is owned by compliance/encryption.ts, mirrored structurally here. */
+    secrets: jsonb('secrets').$type<Record<string, unknown>>().notNull().default({}),
+    status: text('status')
+      .$type<'unverified' | 'valid' | 'invalid' | 'expired'>()
+      .notNull()
+      .default('unverified'),
+    statusMessage: text('status_message'),
+    lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true, mode: 'date' }),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // findFor(kind, providerKey) within a tenant — the resolver's hot lookup.
+    orgKindProviderIdx: index('provider_credentials_org_kind_provider_idx').on(
+      t.orgId,
+      t.kind,
+      t.providerKey,
+    ),
+  }),
+);
+
+/**
+ * Custom RBAC roles. `permissions` is a `text[]` — a short set, always read whole,
+ * validated in the application against the permission catalog. `built_in` marks the
+ * seeded roles that cannot be edited or deleted.
+ */
+export const customRoles = pgTable(
+  'custom_roles',
+  {
+    id: id(),
+    orgId: text('org_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    permissions: text('permissions').array().notNull().default([]),
+    builtIn: boolean('built_in').notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    orgNameUq: uniqueIndex('custom_roles_org_name_uq').on(t.orgId, t.name),
+  }),
+);
+
+/**
+ * Dispatch audit — the evidence trail for every outbound calling decision (docs/13).
+ * Written whether the call was allowed or blocked, with a snapshot of the rules and
+ * the compliance profile that decided it, so a regulator's "why did you call this
+ * person at this time" is answerable from one row. Append-heavy; the retention job
+ * redacts `destination`, the writer never does.
+ */
+export const dispatchAudit = pgTable(
+  'dispatch_audit',
+  {
+    id: id(),
+    orgId: text('org_id').notNull(),
+    workspaceId: text('workspace_id').notNull(),
+    campaignId: text('campaign_id'),
+    leadId: text('lead_id'),
+    decidedAt: timestamp('decided_at', { withTimezone: true, mode: 'date' }).notNull(),
+    decidedBy: text('decided_by').notNull(),
+    destination: text('destination').notNull(),
+    destinationCountry: char('destination_country', { length: 2 }).notNull(),
+    fromNumberId: text('from_number_id'),
+    trunkId: text('trunk_id'),
+    allowed: boolean('allowed').notNull(),
+    reason: text('reason').notNull(),
+    rulesApplied: jsonb('rules_applied')
+      .$type<{ key: string; action: string; reason: string }[]>()
+      .notNull()
+      .default([]),
+    calleeLocalTime: jsonb('callee_local_time')
+      .$type<{ dayOfWeek: number; hour: number }>()
+      .notNull(),
+    attemptNumber: integer('attempt_number').notNull().default(1),
+    hadConsentProof: boolean('had_consent_proof').notNull().default(false),
+    consentProofRef: text('consent_proof_ref'),
+    profileSnapshot: jsonb('profile_snapshot')
+      .$type<{
+        jurisdictions: string[];
+        requireConsentProof: boolean;
+        maxAttemptsPerLead: number;
+        consentModel: string;
+      }>()
+      .notNull(),
+    /**
+     * Which platform ruleset decided this call, and what it resolved to. Nullable
+     * for rows written before 0007 — a decision made then genuinely has no version
+     * to point at, and inventing one would be worse than admitting it.
+     */
+    rulesetVersion: text('ruleset_version'),
+    ruleSnapshot: jsonb('rule_snapshot').$type<Record<string, unknown>>(),
+  },
+  (t) => ({
+    // list(scope, {campaignId|leadId}) — the audit review screen.
+    wsCampaignIdx: index('dispatch_audit_ws_campaign_idx').on(t.workspaceId, t.campaignId, t.decidedAt),
+    wsLeadIdx: index('dispatch_audit_ws_lead_idx').on(t.workspaceId, t.leadId),
+  }),
+);
+
+/**
+ * Per-country compliance rules — PLATFORM data, shared by every tenant.
+ *
+ * Versioned rather than mutated: a dispatch decision stamps the version it used, so
+ * an audit row stays explainable after the rules change. Superseding a rule means
+ * inserting a new version and stamping `retired_at` on the old one; nothing is
+ * edited in place and nothing is deleted.
+ */
+export const jurisdictionRules = pgTable(
+  'jurisdiction_rules',
+  {
+    country: char('country', { length: 2 }).notNull(),
+    version: integer('version').notNull(),
+    rule: jsonb('rule').$type<Record<string, unknown>>().notNull(),
+    /** When counsel signed this version off. null = never reviewed. */
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true, mode: 'date' }),
+    reviewedBy: text('reviewed_by'),
+    source: text('source').notNull(),
+    /** Lets a known future change be staged now and take effect on the day. */
+    effectiveFrom: timestamp('effective_from', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    retiredAt: timestamp('retired_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.country, t.version] }),
+    activeIdx: index('jurisdiction_rules_active_idx').on(t.country, t.effectiveFrom),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 
 /**
  * Every table that carries `org_id` and therefore gets an RLS policy. Kept here so
@@ -620,6 +949,9 @@ export const TENANT_SCOPED_TABLES = [
   'calls',
   'turns',
   'audit_log',
+  'provider_credentials',
+  'custom_roles',
+  'dispatch_audit',
 ] as const;
 
 export type UserRow = typeof users.$inferSelect;
@@ -633,4 +965,65 @@ export type NewAgentRow = typeof agents.$inferInsert;
 export type CallRow = typeof calls.$inferSelect;
 export type TurnRow = typeof turns.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type NewApiKeyRow = typeof apiKeys.$inferInsert;
+export type OrgMembershipRow = typeof orgMemberships.$inferSelect;
+export type NewOrgMembershipRow = typeof orgMemberships.$inferInsert;
+export type InvitationRow = typeof invitations.$inferSelect;
+export type NewInvitationRow = typeof invitations.$inferInsert;
 export type AuditLogRow = typeof auditLog.$inferSelect;
+
+export type UserCredentialRow = typeof userCredentials.$inferSelect;
+export type NewUserCredentialRow = typeof userCredentials.$inferInsert;
+export type EmailVerificationCodeRow = typeof emailVerificationCodes.$inferSelect;
+export type NewEmailVerificationCodeRow = typeof emailVerificationCodes.$inferInsert;
+export type SessionRow = typeof sessions.$inferSelect;
+export type NewSessionRow = typeof sessions.$inferInsert;
+export type ProviderCredentialRow = typeof providerCredentials.$inferSelect;
+export type NewProviderCredentialRow = typeof providerCredentials.$inferInsert;
+export type CustomRoleRow = typeof customRoles.$inferSelect;
+export type NewCustomRoleRow = typeof customRoles.$inferInsert;
+export type DispatchAuditRow = typeof dispatchAudit.$inferSelect;
+export type NewDispatchAuditRow = typeof dispatchAudit.$inferInsert;
+export type TenantKeyRow = typeof tenantKeys.$inferSelect;
+export type NewTenantKeyRow = typeof tenantKeys.$inferInsert;
+
+// ---------------------------------------------------------------------------
+
+/**
+ * A do-not-call extract the tenant has licensed and loaded.
+ *
+ * One row per registry per org. `snapshotAt` is when the REGISTRY produced the
+ * extract, not when it was uploaded: the screening obligation is to check a
+ * current list (31 days under the US TSR), so the freshness clock has to run from
+ * the registry's date or a year-old file would look compliant the day it landed.
+ */
+export const dncSnapshots = pgTable(
+  'dnc_snapshots',
+  {
+    orgId: text('org_id').notNull(),
+    registry: text('registry').notNull(),
+    snapshotAt: timestamp('snapshot_at', { withTimezone: true, mode: 'date' }).notNull(),
+    loadedAt: timestamp('loaded_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    loadedBy: text('loaded_by'),
+    source: text('source').notNull().default(''),
+    entryCount: integer('entry_count').notNull().default(0),
+    maxAgeDays: integer('max_age_days'),
+    /** Area codes the subscription covers; empty = full-registry extract. */
+    areaCodes: text('area_codes').array().notNull().default([]),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.orgId, t.registry] }) }),
+);
+
+/** Listed numbers, stored as normalised national digits — the form registries publish. */
+export const dncNumbers = pgTable(
+  'dnc_numbers',
+  {
+    orgId: text('org_id').notNull(),
+    registry: text('registry').notNull(),
+    digits: text('digits').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.orgId, t.registry, t.digits] }),
+    orgRegistryIdx: index('dnc_numbers_org_registry_idx').on(t.orgId, t.registry),
+  }),
+);

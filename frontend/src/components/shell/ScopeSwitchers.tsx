@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { ApartmentOutlined, PlusOutlined } from '@ant-design/icons';
-import { Avatar, Button, Divider, Flex, Select, Tag, Typography } from 'antd';
+import { Avatar, Button, Divider, Flex, Select, Tag, Tooltip, Typography } from 'antd';
 import { createStyles } from 'antd-style';
 import { useCurrentScope } from '@/lib/scope';
 import { useSessionStore } from '@/stores/session-store';
@@ -104,10 +104,25 @@ export function ScopeSwitchers() {
           <>
             {menu}
             <Divider style={{ margin: '4px 0' }} />
+            {/*
+              There is no `POST /orgs`: an organization is created by signing up,
+              and a second one means a second account. Wiring this would need
+              billing, ownership transfer and an invite path that do not exist, so
+              it says so rather than looking clickable and doing nothing.
+            */}
             <div className={styles.footer}>
-              <Button type="text" size="small" block icon={<PlusOutlined />} style={{ textAlign: 'left' }}>
-                New organization
-              </Button>
+              <Tooltip title="Organizations are created at signup. To start another, sign up with a different email — cross-org switching is then available from this menu.">
+                <Button
+                  type="text"
+                  size="small"
+                  block
+                  disabled
+                  icon={<PlusOutlined />}
+                  style={{ textAlign: 'left' }}
+                >
+                  New organization
+                </Button>
+              </Tooltip>
             </div>
           </>
         )}

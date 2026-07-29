@@ -118,8 +118,10 @@ COMMENT ON FUNCTION app_current_org_id() IS
 DO $$
 DECLARE
   t text;
+  -- NOTE: `organizations` is deliberately NOT in this list. Its tenant key is its
+  -- own `id` (it has no `org_id` column), so the generic `org_id = …` policy cannot
+  -- apply to it — it gets a dedicated `id`-based policy below.
   tenant_tables text[] := ARRAY[
-    'organizations',
     'workspaces',
     'org_memberships',
     'workspace_memberships',
@@ -131,7 +133,15 @@ DECLARE
     'campaigns',
     'leads',
     'calls',
-    'turns'
+    'turns',
+    'call_records',
+    'call_traces',
+    'provider_credentials',
+    'custom_roles',
+    -- Licensed DNC extracts: entitlement belongs to the tenant that bought it, so
+    -- one tenant's list must never screen (or be visible to) another's traffic.
+    'dnc_snapshots',
+    'dnc_numbers'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -149,6 +159,18 @@ BEGIN
 END
 $$;
 
+-- `organizations` is tenant-isolated on its OWN id, not an org_id column: the org a
+-- caller is authorized into is the org they may read and update. Enabled + forced +
+-- policied here explicitly rather than through the generic loop above.
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organizations FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS organizations_tenant_isolation ON organizations;
+CREATE POLICY organizations_tenant_isolation ON organizations
+  FOR ALL
+  TO app_user
+  USING      (id = app_current_org_id())
+  WITH CHECK (id = app_current_org_id());
+
 -- `organizations` needs one extra read path: a reseller/BPO parent org legitimately
 -- needs to LIST its children (docs/12 §5, OrganizationRepository.listChildren).
 -- Read-only, one level, and only for rows whose parent is the current tenant.
@@ -163,9 +185,9 @@ CREATE POLICY organizations_child_read ON organizations
 -- Discovery — the chicken-and-egg case.
 --
 -- `OrganizationRepository.findBySlug` and `.findByVerifiedDomain` take no scope,
--- because they are how a scope is DISCOVERED: a user opens /orgs/acme, or signs
--- up with alice@acme.com and we need to know whether some org has verified
--- acme.com (docs/11 §5). At that moment there is no tenant to set.
+-- because they are how a scope is DISCOVERED: a user opens /orgs/your-org, or signs
+-- up with alice@example.com and we need to know whether some org has verified
+-- example.com (docs/11 §5). At that moment there is no tenant to set.
 --
 -- Rather than granting a pre-tenant SELECT on `organizations` — which would let
 -- any authenticated request enumerate every customer's billing address — these
@@ -228,6 +250,59 @@ CREATE POLICY audit_log_append ON audit_log
 
 
 -- ---------------------------------------------------------------------------
+-- dispatch_audit — tenant-isolated AND append-only, same reasoning as audit_log.
+-- It is the evidence trail for outbound-calling decisions; the application appends
+-- and reads, and never rewrites. Redaction of `destination` by the retention job
+-- runs as a separate, itself-audited role, not as an application capability.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dispatch_audit ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dispatch_audit FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS dispatch_audit_tenant_read ON dispatch_audit;
+CREATE POLICY dispatch_audit_tenant_read ON dispatch_audit
+  FOR SELECT TO app_user
+  USING (org_id = app_current_org_id());
+
+DROP POLICY IF EXISTS dispatch_audit_append ON dispatch_audit;
+CREATE POLICY dispatch_audit_append ON dispatch_audit
+  FOR INSERT TO app_user
+  WITH CHECK (org_id = app_current_org_id());
+
+-- No FOR UPDATE and no FOR DELETE policy exists, by design.
+
+
+-- ---------------------------------------------------------------------------
+-- Global auth material — user_credentials, email_verification_codes, sessions.
+--
+-- Read BEFORE a tenant is known (login, session resolution, code verification),
+-- exactly like `users`. No honest `org_id` to policy on (sessions carries one but
+-- is looked up by id pre-auth). RLS stays ENABLED with a permissive policy so an
+-- audit sees a considered decision, and the app filters by user_id/id in the repo.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  t text;
+  global_tables text[] := ARRAY[
+    'user_credentials',
+    'email_verification_codes',
+    'sessions',
+    'tenant_keys'
+  ];
+BEGIN
+  FOREACH t IN ARRAY global_tables LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I', t || '_global', t);
+    EXECUTE format(
+      'CREATE POLICY %I ON %I FOR ALL TO app_user USING (true) WITH CHECK (true)',
+      t || '_global', t
+    );
+  END LOOP;
+END
+$$;
+
+
+-- ---------------------------------------------------------------------------
 -- users — deliberately NOT tenant-scoped.
 --
 -- One human, one account, many orgs. A user row has no single owning org, so
@@ -245,16 +320,45 @@ CREATE POLICY users_global ON users FOR ALL TO app_user USING (true) WITH CHECK 
 
 
 -- ---------------------------------------------------------------------------
+-- jurisdiction_rules — PLATFORM data, not tenant data.
+--
+-- Every tenant reads the same per-country rules, so there is no org_id to policy
+-- on. Read-only to the app: the ruleset is amended by counsel through a migration
+-- or an ops session, never by a request. RLS stays enabled so the table appears in
+-- a `pg_policies` audit as a considered decision.
+-- ---------------------------------------------------------------------------
+ALTER TABLE jurisdiction_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jurisdiction_rules FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS jurisdiction_rules_global ON jurisdiction_rules;
+CREATE POLICY jurisdiction_rules_global ON jurisdiction_rules FOR SELECT TO app_user USING (true);
+
+
+-- ---------------------------------------------------------------------------
 -- Grants. The privilege model and the policy model are independent: a policy can
 -- only narrow what a GRANT already allows.
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO app_user;
 
+-- Read-only: the app resolves rules, it never writes them.
+GRANT SELECT ON jurisdiction_rules TO app_user;
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   users, organizations, workspaces, org_memberships, workspace_memberships,
   invitations, api_keys, agents, agent_versions, phone_numbers, campaigns,
-  leads, calls, turns
+  leads, calls, turns,
+  -- BYOK credentials + custom RBAC roles are ordinary tenant CRUD.
+  provider_credentials, custom_roles,
+  -- Tenant-licensed do-not-call extracts.
+  dnc_snapshots, dnc_numbers,
+  -- Global auth material (no org_id); filtered by user_id/id in the repo.
+  user_credentials, email_verification_codes, sessions,
+  -- Wrapped per-tenant DEKs; global-accessed by key_id during decrypt.
+  tenant_keys
 TO app_user;
+
+-- dispatch_audit is APPEND-ONLY, like audit_log: no UPDATE, no DELETE granted.
+GRANT SELECT, INSERT ON dispatch_audit TO app_user;
+REVOKE UPDATE, DELETE ON dispatch_audit FROM app_user;
 
 -- APPEND-ONLY AUDIT LOG.
 -- Note what is absent: no UPDATE, no DELETE. Not "we don't do it" — the app role

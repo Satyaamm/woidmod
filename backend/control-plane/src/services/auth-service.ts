@@ -29,6 +29,9 @@ import {
 import { promisify } from 'node:util';
 
 import { newId } from '../domain/ids.js';
+import { generateSecret, provisioningUri, verifyCode as verifyTotp } from './totp.js';
+import { config, isProduction } from '../config.js';
+import { deconflictSlug } from '../domain/reserved-slugs.js';
 import {
   spendCapsSchema,
   type Agent,
@@ -90,11 +93,11 @@ export interface AuthSecrets {
  * correct, loud failure mode for a missing secret in production.
  */
 export function resolveAuthSecrets(logger?: Logger): AuthSecrets {
-  const sessionSecret = process.env.AUTH_SESSION_SECRET;
-  const hashPepper = process.env.AUTH_HASH_PEPPER;
+  const sessionSecret = config.AUTH_SESSION_SECRET;
+  const hashPepper = config.AUTH_HASH_PEPPER;
   if (sessionSecret && hashPepper) return { sessionSecret, hashPepper };
 
-  if (process.env.NODE_ENV === 'production') {
+  if (isProduction) {
     throw new Error(
       'AUTH_SESSION_SECRET and AUTH_HASH_PEPPER are required in production',
     );
@@ -148,6 +151,8 @@ export class AuthenticationError extends Error {
       | 'code_expired'
       | 'too_many_attempts'
       | 'session_invalid'
+      | 'invalid_token'
+      | 'mfa_required'
       | 'email_taken' = 'invalid_credentials',
     readonly status = 401,
   ) {
@@ -178,7 +183,7 @@ export interface SignupResult {
   /**
    * Domain-based org discovery (docs/11 §5). Non-null when a *verified* org owns
    * this email domain. We still provision so the user is never blocked, and the
-   * UI offers "Join Acme?" with a request-to-join instead of silently splitting
+   * UI offers "Join the existing org?" with a request-to-join instead of silently splitting
    * the account into a duplicate org.
    */
   joinableOrg: { id: string; name: string; slug: string } | null;
@@ -335,6 +340,109 @@ export class AuthService {
     });
   }
 
+  // -- Password reset ------------------------------------------------------
+  // Stateless, signed, self-contained token (no DB row): HMAC over {uid, exp} with
+  // the session secret. 30-minute expiry. On use we set the new password AND revoke
+  // every session, so a reset also logs out anyone holding a stolen token.
+
+  private static readonly RESET_TTL_MS = 30 * 60 * 1000;
+
+  private signResetToken(userId: string): string {
+    const payload = Buffer.from(
+      JSON.stringify({
+        uid: userId,
+        purpose: 'pwreset',
+        exp: Math.floor((Date.now() + AuthService.RESET_TTL_MS) / 1000),
+      }),
+    ).toString('base64url');
+    return `pr1.${payload}.${hmacHex(this.deps.secrets.sessionSecret, payload)}`;
+  }
+
+  private verifyResetToken(token: string): string | null {
+    const parts = token.split('.');
+    if (parts.length !== 3 || parts[0] !== 'pr1') return null;
+    const [, payload, sig] = parts;
+    if (!payload || !sig) return null;
+    if (!timingSafeEqualHex(hmacHex(this.deps.secrets.sessionSecret, payload), sig)) return null;
+    let claims: { uid?: unknown; purpose?: unknown; exp?: unknown };
+    try {
+      claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as typeof claims;
+    } catch {
+      return null;
+    }
+    if (claims.purpose !== 'pwreset' || typeof claims.uid !== 'string') return null;
+    if (typeof claims.exp !== 'number' || claims.exp * 1000 <= Date.now()) return null;
+    return claims.uid;
+  }
+
+  /**
+   * Begin a reset. Always resolves the same way whether or not the email exists
+   * (no account enumeration). Returns the token so the caller (route) can email it;
+   * in dev, with no mail service, the route hands it back directly.
+   */
+  async requestPasswordReset(email: string): Promise<{ token: string | null }> {
+    const user = await this.deps.users.findByEmail(email.toLowerCase());
+    if (!user) return { token: null };
+    this.deps.logger.info('password reset requested', { userId: user.id });
+    return { token: this.signResetToken(user.id) };
+  }
+
+  /** Complete a reset: verify token, set the new password, revoke every session. */
+  async resetPassword(token: string, password: string): Promise<void> {
+    const userId = this.verifyResetToken(token);
+    if (!userId) {
+      throw new AuthenticationError('This reset link is invalid or has expired.', 'invalid_token', 400);
+    }
+    await this.setPassword(userId, password);
+    await this.deps.sessions.revokeAllForUser(userId);
+    this.deps.logger.info('password reset completed', { userId });
+  }
+
+  // -- MFA (TOTP) ----------------------------------------------------------
+  // The secret is minted on enroll but MFA is not enforced until the user proves they
+  // can generate a code (confirm). Disabling also requires a current code.
+
+  /** Begin MFA setup: mint a secret + provisioning URI for the authenticator QR. */
+  async enrollMfa(userId: string, email: string): Promise<{ secret: string; uri: string }> {
+    const credential = await this.deps.credentials.findByUserId(userId);
+    if (!credential) throw new AuthenticationError('no credential to protect', 'invalid_credentials', 400);
+    const secret = generateSecret();
+    await this.deps.credentials.upsert({
+      ...credential,
+      totpSecret: secret,
+      mfaEnabled: false,
+      updatedAt: new Date().toISOString(),
+    });
+    return { secret, uri: provisioningUri(secret, email) };
+  }
+
+  /** Confirm setup with a code from the app; only then is MFA enforced at login. */
+  async confirmMfa(userId: string, code: string): Promise<void> {
+    const credential = await this.deps.credentials.findByUserId(userId);
+    if (!credential?.totpSecret) throw new AuthenticationError('start MFA setup first', 'invalid_code', 400);
+    if (!verifyTotp(credential.totpSecret, code)) {
+      throw new AuthenticationError('that code is incorrect or expired', 'invalid_code', 400);
+    }
+    await this.deps.credentials.upsert({ ...credential, mfaEnabled: true, updatedAt: new Date().toISOString() });
+    this.deps.logger.info('mfa enabled', { userId });
+  }
+
+  /** Turn MFA off — requires a current code so a hijacked session can't remove it. */
+  async disableMfa(userId: string, code: string): Promise<void> {
+    const credential = await this.deps.credentials.findByUserId(userId);
+    if (!credential?.totpSecret || !credential.mfaEnabled) return;
+    if (!verifyTotp(credential.totpSecret, code)) {
+      throw new AuthenticationError('that code is incorrect or expired', 'invalid_code', 400);
+    }
+    await this.deps.credentials.upsert({
+      ...credential,
+      totpSecret: undefined,
+      mfaEnabled: false,
+      updatedAt: new Date().toISOString(),
+    });
+    this.deps.logger.info('mfa disabled', { userId });
+  }
+
   // -- Signup: the 60-second path ------------------------------------------
 
   /**
@@ -353,7 +461,7 @@ export class AuthService {
     const country = (input.country ?? 'US').toUpperCase();
 
     // Domain discovery runs BEFORE provisioning so the response can offer
-    // "Join Acme?" — but it never blocks, and never auto-joins: a verified
+    // "Join the existing org?" — but it never blocks, and never auto-joins: a verified
     // domain still requires an explicit request-to-join (docs/11 §5, §E).
     const joinable = await findJoinableOrgFor(this.deps.orgs, user.email);
 
@@ -441,7 +549,7 @@ export class AuthService {
 
   /**
    * Org name is inferred, never asked for (docs/11 §4): a corporate domain
-   * becomes "Acme", a free-mail address becomes "<First>'s Organization".
+   * becomes "Example Corp", a free-mail address becomes "<First>'s Organization".
    * `verifiedDomains` stays empty — a domain claim needs DNS TXT proof, and
    * auto-join off an unproven domain is exactly how tenants get merged wrongly.
    */
@@ -480,10 +588,50 @@ export class AuthService {
 
   // -- Login ---------------------------------------------------------------
 
+  /**
+   * Sign in via an external identity provider (SSO). The IdP has vouched for the
+   * email, so there is no password step: an existing user gets a session against
+   * their first org (like login); a new email is provisioned exactly like signup
+   * (org + workspace + sample agent) with a random unusable password.
+   */
+  async signInWithSso(input: {
+    email: string;
+    userAgent?: string;
+    ip?: string;
+  }): Promise<{ user: User; session: IssuedSession; orgId: string }> {
+    const email = input.email.toLowerCase();
+    const existing = await this.deps.users.findByEmail(email);
+    if (existing) {
+      const memberships = await this.deps.memberships.listForUser(existing.id);
+      const chosen = memberships[0];
+      if (!chosen) {
+        throw new AuthenticationError('no organization for this account', 'invalid_credentials', 403);
+      }
+      const session = await this.issueSession(existing.id, chosen.orgId, {
+        userAgent: input.userAgent,
+        ip: input.ip,
+      });
+      await this.deps.audit?.record(
+        { orgId: chosen.orgId, workspaceId: null, userId: existing.id },
+        'auth.login',
+        { resourceType: 'user', resourceId: existing.id, metadata: { sso: true } },
+      );
+      return { user: existing, session, orgId: chosen.orgId };
+    }
+    // New user — provision like signup; the random password is never used (SSO-only).
+    const result = await this.signup({
+      email,
+      password: randomBytes(24).toString('hex'),
+      userAgent: input.userAgent,
+      ip: input.ip,
+    });
+    return { user: result.user, session: result.session, orgId: result.organization.id };
+  }
+
   async login(
     email: string,
     password: string,
-    opts: { orgId?: string; userAgent?: string; ip?: string } = {},
+    opts: { orgId?: string; userAgent?: string; ip?: string; mfaCode?: string } = {},
   ): Promise<{ user: User; session: IssuedSession; orgId: string }> {
     const user = await this.deps.users.findByEmail(email.toLowerCase());
     const credential = user ? await this.deps.credentials.findByUserId(user.id) : null;
@@ -494,6 +642,17 @@ export class AuthService {
     }
     if (!(await this.verifyPassword(password, credential))) {
       throw new AuthenticationError('invalid email or password');
+    }
+
+    // Second factor. `mfa_required` is a distinct code so the client knows to prompt
+    // for a code rather than treat it as a bad password.
+    if (credential.mfaEnabled) {
+      if (!opts.mfaCode) {
+        throw new AuthenticationError('a code from your authenticator app is required', 'mfa_required', 401);
+      }
+      if (!credential.totpSecret || !verifyTotp(credential.totpSecret, opts.mfaCode)) {
+        throw new AuthenticationError('that verification code is incorrect or expired', 'invalid_code', 401);
+      }
     }
 
     // Fail closed: a user with no membership has nothing to be scoped into.
@@ -549,7 +708,7 @@ export class AuthService {
     }
 
     // Opt-in, explicit, and never on in production — for local end-to-end runs.
-    const expose = process.env.AUTH_EXPOSE_CODES === '1' && process.env.NODE_ENV !== 'production';
+    const expose = config.AUTH_EXPOSE_CODES && !isProduction;
     return expose
       ? { required: true, expiresAt, devCode: code }
       : { required: true, expiresAt };
@@ -715,7 +874,7 @@ export function deriveNames(email: string): { firstName: string; familyName: str
   return { firstName: titleCase(first), familyName: rest ? titleCase(rest) : '' };
 }
 
-/** `acme-corp.com` -> `Acme Corp`. Null for free-mail providers. */
+/** `example-corp.com` -> `Example Corp`. Null for free-mail providers. */
 export function companyNameFromDomain(domain: string): string | null {
   const label = domain.split('.')[0] ?? '';
   if (!label || FREE_MAIL_TITLES.has(label.toLowerCase())) return null;
@@ -733,7 +892,10 @@ function slugify(name: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
   // Org slugs must be >= 2 chars and start/end alphanumeric (organizationSchema).
-  return s.length >= 2 ? s : `org-${randomBytes(3).toString('hex')}`;
+  const base = s.length >= 2 ? s : `org-${randomBytes(3).toString('hex')}`;
+  // Deconflict rather than reject: signup auto-derives this from an email domain,
+  // so a company at `settings.com` must still be able to create an account.
+  return deconflictSlug('organization', base);
 }
 
 const EU_CURRENCY = new Set([
