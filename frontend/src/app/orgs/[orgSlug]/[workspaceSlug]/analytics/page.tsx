@@ -12,13 +12,21 @@ import { formatMs, formatNumber, formatPercent, formatUsd, gradeLatency } from '
 import { useCurrentScope, useScope, wsPath } from '@/lib/scope';
 import { latencyThresholds } from '@/theme/tokens';
 
-/** Stage budget — what each part of the pipeline is allowed to cost (docs/02). */
-const STAGE_BUDGET = [
-  { key: 'endpointing', label: 'Endpointing', budget: 94 },
-  { key: 'stt', label: 'ASR finalize', budget: 40 },
-  { key: 'llm', label: 'LLM TTFT', budget: 88 },
-  { key: 'tts', label: 'TTS TTFB', budget: 112 },
-  { key: 'network', label: 'Network', budget: 58 },
+/**
+ * Fallback stage budgets, used only until the API answers.
+ *
+ * These are DESIGN TARGETS from docs/02, not measurements. This card previously
+ * rendered them as the values — "Endpointing 94 ms · 24%" on a workspace that had
+ * never placed a call — which made a spec look like telemetry. The real numbers
+ * now come from `overview.latencyByStage`, where `measuredMs: null` means nothing
+ * instruments that stage and the card says so.
+ */
+const STAGE_BUDGET_FALLBACK = [
+  { key: 'endpointing', label: 'Endpointing', budgetMs: 94, measuredMs: null },
+  { key: 'stt', label: 'ASR finalize', budgetMs: 40, measuredMs: null },
+  { key: 'llm', label: 'LLM TTFT', budgetMs: 88, measuredMs: null },
+  { key: 'tts', label: 'TTS TTFB', budgetMs: 112, measuredMs: null },
+  { key: 'network', label: 'Network', budgetMs: 58, measuredMs: null },
 ];
 
 export default function AnalyticsPage() {
@@ -31,7 +39,8 @@ export default function AnalyticsPage() {
     [workspace?.id, range],
   );
 
-  const totalBudget = STAGE_BUDGET.reduce((sum, s) => sum + s.budget, 0);
+  const stages = state.data?.latencyByStage ?? STAGE_BUDGET_FALLBACK;
+  const totalBudget = stages.reduce((sum, s) => sum + s.budgetMs, 0);
 
   return (
     <>
@@ -103,23 +112,59 @@ export default function AnalyticsPage() {
                     extra={<Tag bordered={false}>budget {formatMs(totalBudget)}</Tag>}
                   >
                     <Flex vertical gap={14}>
-                      {STAGE_BUDGET.map((stage) => (
-                        <div key={stage.key}>
-                          <Flex justify="space-between" align="baseline">
-                            <Typography.Text>{stage.label}</Typography.Text>
-                            <Typography.Text className="tabular" type="secondary">
-                              {formatMs(stage.budget)} · {Math.round((stage.budget / totalBudget) * 100)}%
-                            </Typography.Text>
-                          </Flex>
-                          <Tooltip title={`${stage.label} share of the turn budget`}>
+                      {stages.map((stage) => {
+                        const measured = stage.measuredMs;
+                        return (
+                          <div key={stage.key}>
+                            <Flex justify="space-between" align="baseline" gap={8}>
+                              <Typography.Text>{stage.label}</Typography.Text>
+                              {measured === null ? (
+                                <Tooltip title="Nothing in the pipeline emits a timing for this stage yet, so there is no measurement to show. The bar is the design budget.">
+                                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                    not measured · budget {formatMs(stage.budgetMs)}
+                                  </Typography.Text>
+                                </Tooltip>
+                              ) : (
+                                <Typography.Text className="tabular" type="secondary">
+                                  {formatMs(measured)}{' '}
+                                  <Typography.Text
+                                    type={measured > stage.budgetMs ? 'danger' : 'success'}
+                                    style={{ fontSize: 12 }}
+                                  >
+                                    {measured > stage.budgetMs ? '▲' : '▼'}{' '}
+                                    {formatMs(Math.abs(measured - stage.budgetMs))} vs budget
+                                  </Typography.Text>
+                                </Typography.Text>
+                              )}
+                            </Flex>
                             <Progress
-                              percent={(stage.budget / totalBudget) * 100}
+                              // Measured bars are scaled against the stage's own
+                              // budget so "over budget" is visible as a full bar,
+                              // rather than against a total that hides it.
+                              percent={Math.min(
+                                100,
+                                ((measured ?? stage.budgetMs) / stage.budgetMs) * 100,
+                              )}
                               showInfo={false}
                               size="small"
+                              status={
+                                measured === null
+                                  ? 'normal'
+                                  : measured > stage.budgetMs
+                                    ? 'exception'
+                                    : 'success'
+                              }
                             />
-                          </Tooltip>
-                        </div>
-                      ))}
+                          </div>
+                        );
+                      })}
+                      {stages.every((s) => s.measuredMs === null) && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          No stage timings yet — these are the design budgets. Place a call and the
+                          stages the worker instruments (LLM TTFT, TTS TTFB) fill in with real
+                          medians.
+                        </Typography.Text>
+                      )}
                     </Flex>
                   </Card>
                 </Col>

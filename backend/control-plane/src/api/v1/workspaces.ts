@@ -67,9 +67,47 @@ function buildOverview(calls: Array<Awaited<ReturnType<Container['services']['ca
     today.filter((k) => new Date(k.startedAt).getHours() === h);
   const hasData = today.length > 0;
 
+  /**
+   * The latency waterfall, measured where anything measures it.
+   *
+   * The Analytics "Latency by stage" card used to render `STAGE_BUDGET` — a
+   * hardcoded design target from docs/02 — as though it were this workspace's
+   * measurement. Every account saw "Endpointing 94 ms · 24%" on a fresh login
+   * having never placed a call.
+   *
+   * Only two stages are genuinely instrumented: the worker emits
+   * `llm.first_token` with its TTFT, and `tts.first_audio` from which TTFB is
+   * derived. Endpointing, ASR-finalize and network are not emitted by anything,
+   * so `measuredMs` is null for them and the UI says so rather than printing the
+   * budget. The budget still travels, as a comparison — that is what it is for.
+   */
+  const stageMedian = (pick: (c: (typeof calls)[number]) => number | undefined) => {
+    const xs = calls.map(pick).filter((n): n is number => typeof n === 'number' && n > 0);
+    return xs.length ? percentile(xs, 0.5) : null;
+  };
+
+  const latencyByStage = [
+    { key: 'endpointing', label: 'Endpointing', budgetMs: 94, measuredMs: null as number | null },
+    { key: 'stt', label: 'ASR finalize', budgetMs: 40, measuredMs: null as number | null },
+    {
+      key: 'llm',
+      label: 'LLM TTFT',
+      budgetMs: 88,
+      measuredMs: stageMedian((c) => c.stageLatencyMs?.llmTtftMs),
+    },
+    {
+      key: 'tts',
+      label: 'TTS TTFB',
+      budgetMs: 112,
+      measuredMs: stageMedian((c) => c.stageLatencyMs?.ttsTtfbMs),
+    },
+    { key: 'network', label: 'Network', budgetMs: 58, measuredMs: null as number | null },
+  ];
+
   return {
     activeCalls: active.length,
     callsToday: today.length,
+    latencyByStage,
     concurrentPeak: active.length,
     medianLatencyMs: percentile(latencies, 0.5),
     p95LatencyMs: percentile(p95s, 0.95),

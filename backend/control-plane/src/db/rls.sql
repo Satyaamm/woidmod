@@ -137,7 +137,11 @@ DECLARE
     'call_records',
     'call_traces',
     'provider_credentials',
-    'custom_roles'
+    'custom_roles',
+    -- Licensed DNC extracts: entitlement belongs to the tenant that bought it, so
+    -- one tenant's list must never screen (or be visible to) another's traffic.
+    'dnc_snapshots',
+    'dnc_numbers'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -344,6 +348,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   leads, calls, turns,
   -- BYOK credentials + custom RBAC roles are ordinary tenant CRUD.
   provider_credentials, custom_roles,
+  -- Tenant-licensed do-not-call extracts.
+  dnc_snapshots, dnc_numbers,
   -- Global auth material (no org_id); filtered by user_id/id in the repo.
   user_credentials, email_verification_codes, sessions,
   -- Wrapped per-tenant DEKs; global-accessed by key_id during decrypt.

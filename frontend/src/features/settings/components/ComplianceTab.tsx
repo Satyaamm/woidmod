@@ -21,6 +21,7 @@ import {
 } from 'antd';
 import { createStyles } from 'antd-style';
 import type { ComplianceProfile, Workspace } from '@/lib/contract';
+import { useAsync } from '@/hooks/useAsync';
 import { settingsApi, type WorkspaceCapabilities } from '@/features/settings/api';
 import { reasonCopy } from '@/features/settings/eligibility';
 import { useDraft } from '@/features/settings/useDraft';
@@ -400,10 +401,25 @@ function DncSection({ workspace, canWrite, onSaved }: SectionProps) {
   const expected = suggestedRegistries(workspace.compliance.jurisdictions);
   const missing = expected.filter((r) => !draft.dncRegistries.includes(r));
 
+  /**
+   * Which of these registries this deployment can actually query.
+   *
+   * Selecting a registry states an obligation; it does not create an
+   * integration. The national schemes (FTC, Bloctel, TPS) distribute files under
+   * a subscription rather than offering an API, so a fresh deployment can screen
+   * none of them — and a ticked box that screens nothing is worse than an
+   * unticked one, because it reads as a completed control.
+   */
+  const status = useAsync(() => settingsApi.dncStatus(workspace.id), [workspace.id]);
+  const screenable = new Set(status.data?.screenable ?? []);
+  const unscreenable = draft.dncRegistries.filter(
+    (r) => r !== 'internal' && !screenable.has(r),
+  );
+
   return (
     <SettingsSection
       title="Do-not-call and attempt limits"
-      description="Checked immediately before each dial. A number on any selected registry is never called, and the block is written to the call record so you can prove it."
+      description="Checked immediately before each dial. A number found on a registry that can be screened is never called, and the block is written to the call record so you can prove it."
       dirty={dirty}
       onSave={() =>
         save({
@@ -428,18 +444,63 @@ function DncSection({ workspace, canWrite, onSaved }: SectionProps) {
             style={{ width: '100%', marginTop: 6 }}
           >
             <Row gutter={[8, 8]}>
-              {DNC_REGISTRIES.map((r) => (
-                <Col xs={24} md={12} key={r.value}>
-                  <Checkbox value={r.value} style={{ alignItems: 'flex-start' }}>
-                    <Flex vertical gap={1}>
-                      <Typography.Text style={{ fontSize: 13 }}>{r.label}</Typography.Text>
-                      <span className={styles.optionDesc}>{r.description}</span>
-                    </Flex>
-                  </Checkbox>
-                </Col>
-              ))}
+              {DNC_REGISTRIES.map((r) => {
+                // `internal` is the org's own suppression list — always screened,
+                // never an integration, so it never carries a gap tag.
+                const wired = r.value === 'internal' || screenable.has(r.value);
+                return (
+                  <Col xs={24} md={12} key={r.value}>
+                    <Checkbox value={r.value} style={{ alignItems: 'flex-start' }}>
+                      <Flex vertical gap={1}>
+                        <Flex align="center" gap={6}>
+                          <Typography.Text style={{ fontSize: 13 }}>{r.label}</Typography.Text>
+                          {!status.loading && !wired && (
+                            <Tooltip title="No integration is configured for this registry, so selecting it cannot screen anything. It states the obligation only.">
+                              <Tag bordered={false} color="orange" style={{ marginInlineEnd: 0 }}>
+                                not connected
+                              </Tag>
+                            </Tooltip>
+                          )}
+                        </Flex>
+                        <span className={styles.optionDesc}>{r.description}</span>
+                      </Flex>
+                    </Checkbox>
+                  </Col>
+                );
+              })}
             </Row>
           </Checkbox.Group>
+          {unscreenable.length > 0 && !status.loading && (
+            <Alert
+              type={status.data?.unscreenableRefused ? 'info' : 'warning'}
+              showIcon
+              style={{ marginTop: 10 }}
+              message={
+                status.data?.unscreenableRefused
+                  ? 'Calls needing these registries are being refused'
+                  : 'Calls needing these registries are going out unscreened'
+              }
+              description={
+                <Flex vertical gap={6}>
+                  <span>
+                    No integration is configured for{' '}
+                    <Typography.Text strong>{unscreenable.join(', ')}</Typography.Text>, so ticking
+                    them records the obligation without performing a check. Your own suppression
+                    list is always screened.
+                  </span>
+                  <span>
+                    {status.data?.unscreenableRefused
+                      ? 'Because unscreenable numbers are refused, dials to countries requiring these are blocked rather than made blind — which is the safe failure, but it does mean those campaigns will not run.'
+                      : 'Unscreenable numbers are currently dialled anyway, with the gap recorded on each audit row. Set DNC_REQUIRE_SCREENING=1 to refuse them instead.'}
+                  </span>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {status.data?.note}
+                  </Typography.Text>
+                </Flex>
+              }
+            />
+          )}
+
           {missing.length > 0 && (
             <Alert
               type="warning"

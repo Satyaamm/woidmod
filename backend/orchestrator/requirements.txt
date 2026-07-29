@@ -20,6 +20,10 @@ livekit-plugins-aws==1.6.6
 livekit-plugins-speechmatics==1.6.6
 livekit-plugins-soniox==1.6.6
 livekit-plugins-rime==1.6.6
+# Indian-language STT (Saarika) and TTS (Bulbul).
+livekit-plugins-sarvam==1.6.6
+livekit-plugins-inworld==1.6.6
+livekit-plugins-fishaudio==1.6.6
 # NOT listed: livekit-plugins-playai. LiveKit stopped publishing it at 1.2.x, which
 # cannot coexist with livekit-agents 1.6.6. PlayHT credentials are still storable
 # and testable; `build_tts` refuses the call with that reason rather than letting

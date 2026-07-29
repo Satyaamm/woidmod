@@ -455,6 +455,8 @@ export interface DispatchContext {
    * integration configured, or the lookup failed. Empty means fully screened.
    */
   dncUnavailable?: readonly string[];
+  /** Per-registry explanation for the above, when the screener supplied one. */
+  dncUnavailableReasons?: Readonly<Record<string, string>>;
   /**
    * Whether an unscreenable number is refused. Fails closed by default: a statutory
    * screening obligation you cannot discharge is a reason not to dial, not a
@@ -519,7 +521,13 @@ export function buildComplianceChain(): HandlerChain<DispatchDecision, DispatchC
         // reporting "could not screen" over a number we know is listed would be a
         // worse explanation of the same refusal.
         if (ctx.requireDncScreening === false) return null;
-        return `cannot screen ${missing.join(', ')} for ${ctx.rule.country} — no registry integration configured`;
+        const why = missing
+          .map((r) => {
+            const reason = ctx.dncUnavailableReasons?.[r];
+            return reason ? `${r} (${reason})` : r;
+          })
+          .join('; ');
+        return `cannot screen ${ctx.rule.country}: ${why}`;
       }),
     )
     .use(
@@ -591,8 +599,14 @@ export function requiresTwoPartyConsent(
 }
 
 /** Default residency region for an org's country — inferred, then locked on use. */
-export function defaultRegionFor(country: string): 'us-east' | 'eu-west' | 'eu-central' {
+export function defaultRegionFor(
+  country: string,
+): 'us-east' | 'eu-west' | 'eu-central' | 'ap-south' {
   const cc = country.toUpperCase();
+  // India pins in-country. Without this an Indian signup landed in us-east, which
+  // then made the Indian-language vendors ineligible on residency grounds — the
+  // one set of customers they exist for.
+  if (cc === 'IN') return 'ap-south';
   if (cc === 'DE' || cc === 'AT' || cc === 'CH' || cc === 'PL' || cc === 'CZ') {
     return 'eu-central'; // German-speaking customers frequently require in-country
   }

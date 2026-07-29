@@ -68,6 +68,18 @@ export interface LiveJurisdictionRule {
   notes: string;
 }
 
+/** `GET /v1/compliance/dnc-status` — what this deployment can really screen. */
+export interface DncStatus {
+  /** Registries a rule names AND this deployment can query. */
+  screenable: string[];
+  /** Registries a rule names and nothing can query — a gap on every such dial. */
+  unavailable: string[];
+  /** True when an unscreenable number is refused rather than dialled and recorded. */
+  unscreenableRefused: boolean;
+  internalListScreened: boolean;
+  note: string;
+}
+
 export interface JurisdictionRuleset {
   version: string;
   /** True when the stored ruleset could not be loaded and the build's copy is serving. */
@@ -131,6 +143,17 @@ export const settingsApi = {
    */
   jurisdictions: async (workspaceId: string): Promise<JurisdictionRuleset> =>
     (await http.get<JurisdictionRuleset>('/compliance/jurisdictions', scoped(workspaceId))).data,
+
+  /**
+   * Which DNC registries this deployment can actually query.
+   *
+   * Separate from the workspace's *selection* on purpose, and the distinction is
+   * the whole point: ticking `us_national_dnc` states an obligation, but whether
+   * anything can screen it is a deployment fact. Without this the settings page
+   * shows a ticked box and implies a check that nothing performs.
+   */
+  dncStatus: async (workspaceId: string): Promise<DncStatus> =>
+    (await http.get<DncStatus>('/compliance/dnc-status', scoped(workspaceId))).data,
 
   /**
    * "Would this call go through?" — runs the real chain, dials nothing, records

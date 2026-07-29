@@ -71,6 +71,23 @@ const envSchema = z.object({
    */
   DNC_REGISTRY_PROVIDERS: z.string().optional(),
 
+  /**
+   * Where statutory DNC screening comes from. An EXPLICIT choice with no fallback:
+   *
+   *   'none' (default) — nothing screens the statutory registries. With
+   *                      DNC_REQUIRE_SCREENING on, dials to countries that name one
+   *                      are refused. The org's own suppression list still applies.
+   *   'api'            — commercial lookup endpoints from DNC_REGISTRY_PROVIDERS.
+   *   'db'             — extracts the tenant has loaded, screened from Postgres.
+   *
+   * Deliberately not "api, else db": silently falling back changes what a screen
+   * MEANS without anyone choosing it, and the two have different evidence trails —
+   * a vendor lookup is a third party's answer, a loaded extract is your own file
+   * with your own re-scrub deadline. Which one discharged the obligation is
+   * exactly what an auditor asks, so it is configured, not inferred.
+   */
+  DNC_SOURCE: z.enum(['none', 'api', 'db']).default('none'),
+
   // -- SSO (OAuth 2.0 / OIDC) — optional; a provider is live only when BOTH id+secret set.
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
@@ -80,12 +97,30 @@ const envSchema = z.object({
   // -- RAG: pluggable vector store (bring your own) ---------------------------
   // Embeddings use the workspace's BYOK OpenAI key; the vector store is a
   // deployment choice. 'memory' (default) needs nothing; the others need creds.
-  VECTOR_DB_PROVIDER: z.enum(['memory', 'pgvector', 'pinecone', 'chroma']).default('memory'),
+  VECTOR_DB_PROVIDER: z
+    .enum(['memory', 'pgvector', 'pinecone', 'chroma', 'qdrant', 'weaviate'])
+    .default('memory'),
   VECTOR_DB_CONNECTION_STRING: z.string().optional(), // pgvector
   VECTOR_DB_API_KEY: z.string().optional(), // pinecone / chroma
   VECTOR_DB_INDEX_HOST: z.string().optional(), // pinecone data-plane host
   VECTOR_DB_URL: z.string().optional(), // chroma server url
   EMBEDDINGS_MODEL: z.string().default('text-embedding-3-small'),
+  /**
+   * Which BYOK credential the embedder uses, and where it sends the request.
+   *
+   * `openai` is the default; `azure-openai` and any OpenAI-compatible gateway work
+   * through the same wire format, so they need a base URL rather than new code.
+   * The embedder class has always supported this — the container just never passed
+   * it, which made the platform OpenAI-only in practice while claiming otherwise.
+   *
+   * Vendors whose embeddings API is NOT OpenAI-shaped (Bedrock's SigV4, Vertex's
+   * OAuth) need their own Embedder implementation; they are absent rather than
+   * half-wired.
+   */
+  EMBEDDINGS_PROVIDER: z.enum(['openai', 'azure-openai', 'compatible']).default('openai'),
+  /** Required for `azure-openai` and `compatible`; ignored for `openai`. */
+  EMBEDDINGS_BASE_URL: z.string().optional(),
+  EMBEDDINGS_DIMS: z.coerce.number().int().positive().default(1536),
 
   // -- Telephony carrier (Twilio) — platform-level fallback -------------------
   // Per-workspace BYOK Twilio creds (stored via provider credentials) win; these

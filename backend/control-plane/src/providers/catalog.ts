@@ -211,6 +211,62 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
 
   // -- TTS -------------------------------------------------------------------
   {
+    key: 'sarvam-stt',
+    kind: 'stt',
+    label: 'Sarvam AI (Saarika)',
+    configFields: ['language'],
+    optionalFields: ['language'],
+    defaults: { language: 'en-IN' },
+    secretFields: ['apiKey'],
+    note:
+      'Indian languages — Hindi, Bengali, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, ' +
+      'Telugu, Gujarati and Indian English. Processing is in India, so a workspace pinned to ' +
+      'a US or EU region cannot use it; pin to India (Mumbai) instead.',
+    keyUrl: 'https://dashboard.sarvam.ai',
+    runnable: true,
+  },
+  {
+    key: 'sarvam-tts',
+    kind: 'tts',
+    label: 'Sarvam AI (Bulbul)',
+    configFields: ['language', 'speaker'],
+    optionalFields: ['language', 'speaker'],
+    defaults: { language: 'en-IN', speaker: 'anushka' },
+    secretFields: ['apiKey'],
+    note:
+      'Indian-language voices. One Sarvam account serves both STT and TTS, so the key is ' +
+      'shared with sarvam-stt. Same India residency constraint.',
+    keyUrl: 'https://dashboard.sarvam.ai',
+    runnable: true,
+  },
+  {
+    key: 'inworld-tts',
+    kind: 'tts',
+    label: 'Inworld',
+    configFields: ['voice', 'model'],
+    optionalFields: ['voice', 'model'],
+    defaults: { voice: 'Ashley', model: 'inworld-tts-1.5-max' },
+    secretFields: ['apiKey'],
+    // Their key is issued base64-encoded; pasting the raw pair fails auth with a
+    // 401 that reads like a wrong key rather than a wrongly-encoded one.
+    note: 'Paste the Base64-encoded key from the Inworld portal, not the raw id:secret pair.',
+    keyUrl: 'https://platform.inworld.ai',
+    runnable: true,
+  },
+  {
+    key: 'fishaudio-tts',
+    kind: 'tts',
+    label: 'Fish Audio',
+    // referenceId selects a cloned/library voice; without one the model default speaks.
+    configFields: ['referenceId', 'model'],
+    optionalFields: ['referenceId', 'model'],
+    defaults: { model: 's1' },
+    secretFields: ['apiKey'],
+    note: 'Reference ID is the voice model id from the Fish Audio library or your own clone.',
+    keyUrl: 'https://fish.audio/go-api',
+    runnable: true,
+  },
+  {
     key: 'cartesia-tts',
     kind: 'tts',
     label: 'Cartesia',
@@ -319,6 +375,57 @@ export const CATALOG_ONLY_POSTURES = [
     notes:
       'Same Cartesia account and posture as their TTS. Runs in the worker via the Cartesia ' +
       'LiveKit plugin; the control plane has no in-process STT adapter for it.',
+  },
+  {
+    key: 'sarvam-stt',
+    kind: 'stt' as const,
+    // India only. Declaring US/EU to make it selectable everywhere would be a lie the
+    // eligibility gate then enforces — the point of that gate is that it cannot be
+    // talked round.
+    allowedBlocs: ['IN'] as Array<'US' | 'EU' | 'IN'>,
+    baaSigned: false,
+    dpaSigned: false,
+    retainsData: false,
+    trainsOnData: false,
+    selfHosted: false,
+    notes:
+      'Indian-language ASR, processed in India. ⚖️ DPA/BAA status not verified — confirm with ' +
+      'the vendor before processing personal data.',
+  },
+  {
+    key: 'inworld-tts',
+    kind: 'tts' as const,
+    allowedBlocs: ['US'] as Array<'US' | 'EU' | 'IN'>,
+    baaSigned: false,
+    dpaSigned: false,
+    retainsData: false,
+    trainsOnData: false,
+    selfHosted: false,
+    notes: 'US-processed TTS. ⚖️ DPA/BAA status not verified — confirm before personal data.',
+  },
+  {
+    key: 'fishaudio-tts',
+    kind: 'tts' as const,
+    allowedBlocs: ['US'] as Array<'US' | 'EU' | 'IN'>,
+    baaSigned: false,
+    dpaSigned: false,
+    retainsData: false,
+    trainsOnData: false,
+    selfHosted: false,
+    notes: 'US-processed TTS. ⚖️ DPA/BAA status not verified — confirm before personal data.',
+  },
+  {
+    key: 'sarvam-tts',
+    kind: 'tts' as const,
+    allowedBlocs: ['IN'] as Array<'US' | 'EU' | 'IN'>,
+    baaSigned: false,
+    dpaSigned: false,
+    retainsData: false,
+    trainsOnData: false,
+    selfHosted: false,
+    notes:
+      'Indian-language TTS, processed in India. Shares the Sarvam account and posture with ' +
+      'sarvam-stt. ⚖️ DPA/BAA status not verified.',
   },
 ];
 

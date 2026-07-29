@@ -120,6 +120,32 @@ export class CallIngestService {
       .filter((n) => Number.isFinite(n) && n > 0);
     const failed = ended ? String(ended.reason ?? '').includes('error') : false;
 
+    /**
+     * Time-to-first-BYTE of audio, per turn: `tts.first_audio` minus the
+     * `llm.first_token` that preceded it.
+     *
+     * The worker times both but emits neither as a duration, so it is derived
+     * here by pairing each first-audio with the most recent first-token before
+     * it. Turns where either event is missing contribute nothing rather than a
+     * zero — a zero would drag the median toward a latency nobody observed.
+     */
+    const firstTokenTimes = raw
+      .filter((e) => e.type === 'llm.first_token')
+      .map((e) => e.tMs ?? 0)
+      .sort((a, b) => a - b);
+    const ttfbs: number[] = [];
+    for (const audio of raw.filter((e) => e.type === 'tts.first_audio')) {
+      const at = audio.tMs ?? 0;
+      const token = [...firstTokenTimes].reverse().find((t) => t <= at);
+      if (token !== undefined && at > token) ttfbs.push(at - token);
+    }
+
+    // Only stages the worker actually instruments appear. Endpointing, ASR
+    // finalize and network are not emitted by anything, so they stay absent.
+    const stageLatencyMs: { llmTtftMs?: number; ttsTtfbMs?: number } = {};
+    if (ttfts.length) stageLatencyMs.llmTtftMs = median(ttfts);
+    if (ttfbs.length) stageLatencyMs.ttsTtfbMs = median(ttfbs);
+
     // Real per-call cost: telephony minutes + LLM tokens (summed from llm.done events).
     const llmDone = raw.filter((e) => e.type === 'llm.done');
     const sum = (k: string) => llmDone.reduce((s, e) => s + (Number(e[k]) || 0), 0);
@@ -148,6 +174,7 @@ export class CallIngestService {
       turnCount: raw.filter((e) => e.type === 'endpoint.commit').length,
       medianLatencyMs: median(ttfts),
       p95LatencyMs: percentile(ttfts, 0.95),
+      ...(Object.keys(stageLatencyMs).length ? { stageLatencyMs } : {}),
       costUsd,
       bargeInCount: raw.filter((e) => e.type === 'bargein.detected').length,
       agentVersion: Number(started?.agentVersion ?? 1),

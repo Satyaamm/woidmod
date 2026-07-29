@@ -11,6 +11,7 @@
  * the same three methods — no change to the knowledge pipeline.
  */
 
+import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 
 import { MemoryVectorStore, cosine, type VectorHit, type VectorRecord, type VectorStore } from './vector-store.js';
@@ -19,7 +20,9 @@ export type VectorStoreConfig =
   | { provider: 'memory' }
   | { provider: 'pgvector'; connectionString: string; table?: string; dims?: number }
   | { provider: 'pinecone'; apiKey: string; indexHost: string }
-  | { provider: 'chroma'; url: string; apiKey?: string; collection?: string };
+  | { provider: 'chroma'; url: string; apiKey?: string; collection?: string }
+  | { provider: 'qdrant'; url: string; apiKey?: string; collection?: string }
+  | { provider: 'weaviate'; url: string; apiKey?: string; className?: string };
 
 /** Build a vector store from config. Unknown/absent → in-memory (always works). */
 export function createVectorStore(config?: VectorStoreConfig | null): VectorStore {
@@ -30,6 +33,10 @@ export function createVectorStore(config?: VectorStoreConfig | null): VectorStor
       return new PineconeVectorStore(config.apiKey, config.indexHost);
     case 'chroma':
       return new ChromaVectorStore(config.url, config.collection ?? 'woidmod_kb', config.apiKey);
+    case 'qdrant':
+      return new QdrantVectorStore(config.url, config.collection ?? 'woidmod_kb', config.apiKey);
+    case 'weaviate':
+      return new WeaviateVectorStore(config.url, config.className ?? 'WoidmodKb', config.apiKey);
     default:
       return new MemoryVectorStore();
   }
@@ -273,3 +280,226 @@ export class ChromaVectorStore implements VectorStore {
 
 /** Re-export so callers import stores + factory from one module. */
 export { MemoryVectorStore, cosine };
+
+
+/**
+ * Qdrant.
+ *
+ * Namespace and source id go in the payload rather than into separate collections:
+ * one collection with a filter is how Qdrant is meant to be used for multi-tenancy,
+ * and creating a collection per workspace would hit its per-collection overhead
+ * long before it hit any scale problem.
+ *
+ * Point ids must be an unsigned integer or a UUID — an arbitrary chunk id is
+ * neither — so the id is a deterministic UUIDv5-shaped hash of namespace+chunk,
+ * which keeps a re-index idempotent.
+ *
+ * VERIFIED 2026-07-29: PUT /collections/{c}/points, POST /collections/{c}/points/query,
+ * POST /collections/{c}/points/delete, header `api-key`.
+ */
+export class QdrantVectorStore implements VectorStore {
+  readonly kind = 'qdrant';
+
+  constructor(
+    private readonly url: string,
+    private readonly collection: string,
+    private readonly apiKey?: string,
+  ) {}
+
+  private headers(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      ...(this.apiKey ? { 'api-key': this.apiKey } : {}),
+    };
+  }
+
+  private async call(path: string, method: string, body: unknown): Promise<unknown> {
+    const res = await fetch(`${this.url.replace(/\/$/, '')}${path}`, {
+      method,
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`Qdrant ${method} ${path} failed (${res.status}): ${await res.text()}`);
+    return res.json();
+  }
+
+  async upsertSource(namespace: string, sourceId: string, records: VectorRecord[]): Promise<void> {
+    // Replace, not merge: a re-index must not leave chunks that no longer exist.
+    await this.deleteSource(namespace, sourceId);
+    if (!records.length) return;
+
+    await this.call(`/collections/${this.collection}/points?wait=true`, 'PUT', {
+      points: records.map((r) => ({
+        id: pointId(namespace, r.id),
+        vector: r.embedding,
+        payload: { namespace, sourceId, sourceName: r.sourceName, chunkId: r.id, text: r.text },
+      })),
+    });
+  }
+
+  async query(namespace: string, embedding: number[], topK: number): Promise<VectorHit[]> {
+    const body = (await this.call(`/collections/${this.collection}/points/query`, 'POST', {
+      query: embedding,
+      limit: topK,
+      with_payload: true,
+      filter: { must: [{ key: 'namespace', match: { value: namespace } }] },
+    })) as { result?: { points?: Array<{ score: number; payload?: Record<string, unknown> }> } };
+
+    return (body.result?.points ?? []).map((p) => ({
+      id: String(p.payload?.chunkId ?? ''),
+      sourceId: String(p.payload?.sourceId ?? ''),
+      sourceName: String(p.payload?.sourceName ?? ''),
+      score: p.score,
+      text: String(p.payload?.text ?? ''),
+    }));
+  }
+
+  async deleteSource(namespace: string, sourceId: string): Promise<void> {
+    await this.call(`/collections/${this.collection}/points/delete?wait=true`, 'POST', {
+      filter: {
+        must: [
+          { key: 'namespace', match: { value: namespace } },
+          { key: 'sourceId', match: { value: sourceId } },
+        ],
+      },
+    });
+  }
+}
+
+/**
+ * Weaviate.
+ *
+ * Split-brain by design: objects are written over REST (`/v1/objects`) but vector
+ * search is GraphQL-only (`nearVector`), so this class speaks both. That is
+ * Weaviate's API shape, not a shortcut — there is no REST vector-search endpoint.
+ *
+ * VERIFIED 2026-07-29: REST base /v1, `Authorization: Bearer <key>`,
+ * GraphQL at /v1/graphql, batch delete at /v1/batch/objects.
+ */
+export class WeaviateVectorStore implements VectorStore {
+  readonly kind = 'weaviate';
+
+  constructor(
+    private readonly url: string,
+    private readonly className: string,
+    private readonly apiKey?: string,
+  ) {}
+
+  private headers(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+    };
+  }
+
+  private base(): string {
+    return this.url.replace(/\/$/, '');
+  }
+
+  async upsertSource(namespace: string, sourceId: string, records: VectorRecord[]): Promise<void> {
+    await this.deleteSource(namespace, sourceId);
+    if (!records.length) return;
+
+    // One object per request: Weaviate's batch endpoint reports per-object errors
+    // inside a 200, so a batch that half-failed would look like a success here.
+    for (const r of records) {
+      const res = await fetch(`${this.base()}/v1/objects`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({
+          class: this.className,
+          vector: r.embedding,
+          properties: {
+            namespace,
+            sourceId,
+            sourceName: r.sourceName,
+            chunkId: r.id,
+            text: r.text,
+          },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Weaviate insert failed (${res.status}): ${await res.text()}`);
+      }
+    }
+  }
+
+  async query(namespace: string, embedding: number[], topK: number): Promise<VectorHit[]> {
+    const gql = {
+      query: `{
+        Get {
+          ${this.className}(
+            limit: ${topK}
+            nearVector: { vector: ${JSON.stringify(embedding)} }
+            where: { path: ["namespace"], operator: Equal, valueText: ${JSON.stringify(namespace)} }
+          ) {
+            chunkId
+            sourceId
+            sourceName
+            text
+            _additional { certainty }
+          }
+        }
+      }`,
+    };
+
+    const res = await fetch(`${this.base()}/v1/graphql`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(gql),
+    });
+    if (!res.ok) throw new Error(`Weaviate query failed (${res.status}): ${await res.text()}`);
+
+    const body = (await res.json()) as {
+      data?: { Get?: Record<string, Array<Record<string, unknown>>> };
+      errors?: Array<{ message?: string }>;
+    };
+    // GraphQL reports failures in a 200 body; treating that as an empty result set
+    // would silently return "no matches" for a broken query.
+    if (body.errors?.length) {
+      throw new Error(`Weaviate query error: ${body.errors.map((e) => e.message).join('; ')}`);
+    }
+
+    return (body.data?.Get?.[this.className] ?? []).map((row) => ({
+      id: String(row.chunkId ?? ''),
+      sourceId: String(row.sourceId ?? ''),
+      sourceName: String(row.sourceName ?? ''),
+      // certainty is 0..1 and already comparable to cosine similarity.
+      score: Number((row._additional as { certainty?: number } | undefined)?.certainty ?? 0),
+      text: String(row.text ?? ''),
+    }));
+  }
+
+  async deleteSource(namespace: string, sourceId: string): Promise<void> {
+    const res = await fetch(`${this.base()}/v1/batch/objects`, {
+      method: 'DELETE',
+      headers: this.headers(),
+      body: JSON.stringify({
+        match: {
+          class: this.className,
+          where: {
+            operator: 'And',
+            operands: [
+              { path: ['namespace'], operator: 'Equal', valueText: namespace },
+              { path: ['sourceId'], operator: 'Equal', valueText: sourceId },
+            ],
+          },
+        },
+      }),
+    });
+    // 404 = the class does not exist yet, which is the same end state as deleted.
+    if (!res.ok && res.status !== 404) {
+      throw new Error(`Weaviate delete failed (${res.status}): ${await res.text()}`);
+    }
+  }
+}
+
+/**
+ * Deterministic UUID for a chunk. Qdrant accepts only unsigned ints or UUIDs as
+ * point ids, and re-indexing the same chunk must overwrite rather than duplicate,
+ * so the id is derived from namespace + chunk id rather than generated.
+ */
+function pointId(namespace: string, chunkId: string): string {
+  const h = createHash('sha1').update(`${namespace}:${chunkId}`).digest('hex');
+  return [h.slice(0, 8), h.slice(8, 12), `5${h.slice(13, 16)}`, `a${h.slice(17, 20)}`, h.slice(20, 32)].join('-');
+}

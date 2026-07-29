@@ -111,8 +111,10 @@ import { BUILT_IN_RULESET, buildComplianceChain } from './services/compliance.js
 import { OutboundGuard } from './services/outbound-guard.js';
 import { JurisdictionRulesetService } from './services/jurisdiction-ruleset.js';
 import { PostgresJurisdictionRuleRepository } from './repositories/postgres/jurisdiction-rules.js';
-import { DncService } from './services/dnc.js';
+import { DncService, type DncRegistryProvider } from './services/dnc.js';
 import { httpRegistriesFromEnv } from './services/dnc-providers.js';
+import { DbBackedRegistry } from './services/dnc-db-registry.js';
+import { PostgresDncListRepository, type DncListRepository } from './repositories/postgres/dnc-lists.js';
 import { Dialer } from './services/dialer.js';
 import {
   ProviderCredentialService,
@@ -142,6 +144,10 @@ function vectorDbConfig(c: Env): VectorStoreConfig {
       return { provider: 'pinecone', apiKey: c.VECTOR_DB_API_KEY ?? '', indexHost: c.VECTOR_DB_INDEX_HOST ?? '' };
     case 'chroma':
       return { provider: 'chroma', url: c.VECTOR_DB_URL ?? '', apiKey: c.VECTOR_DB_API_KEY };
+    case 'qdrant':
+      return { provider: 'qdrant', url: c.VECTOR_DB_URL ?? '', apiKey: c.VECTOR_DB_API_KEY };
+    case 'weaviate':
+      return { provider: 'weaviate', url: c.VECTOR_DB_URL ?? '', apiKey: c.VECTOR_DB_API_KEY };
     default:
       return { provider: 'memory' };
   }
@@ -264,6 +270,12 @@ export interface Container {
     jurisdictions: JurisdictionRulesetService;
     /** DNC screening: the org's own list plus any configured statutory registries. */
     dnc: DncService;
+    /**
+     * Loaded registry extracts. Null in memory mode — a list that vanishes on
+     * restart would be worse than none, because it reads as screened until it
+     * silently isn't.
+     */
+    dncLists: DncListRepository | null;
     /** Campaign dialer — gated, paced and audited. */
     dialer: Dialer;
   };
@@ -547,9 +559,44 @@ export function createContainer(opts: ContainerOptions = {}): Container {
     Object.values(BUILT_IN_RULESET.rules).flatMap((r) => r.dncRegistries as string[]),
   );
 
+  /*
+   * Statutory screening comes from ONE configured source — never one falling back
+   * to the other. A vendor lookup and a locally-loaded extract are different kinds
+   * of evidence with different re-scrub obligations, so which one answered has to
+   * be a decision on the record rather than whatever happened to be wired.
+   *
+   * Registries the chosen source cannot serve stay `unavailable`, which is the
+   * honest state and what DNC_REQUIRE_SCREENING then acts on.
+   */
+  const dncLists: DncListRepository | null = db ? new PostgresDncListRepository(db) : null;
+  const dncProviders = new Map<string, DncRegistryProvider>();
+
+  if (config.DNC_SOURCE === 'api') {
+    for (const [key, provider] of httpRegistriesFromEnv(
+      config.DNC_REGISTRY_PROVIDERS,
+      logger,
+      knownRegistries,
+    )) {
+      dncProviders.set(key, provider);
+    }
+  } else if (config.DNC_SOURCE === 'db') {
+    if (!dncLists) {
+      // In-memory mode has nowhere to hold a list; saying so beats screening
+      // against nothing while the config claims otherwise.
+      logger.warn('DNC_SOURCE=db needs Postgres — no statutory registry will be screened', {
+        storage: 'in-memory',
+      });
+    } else {
+      for (const registry of knownRegistries) {
+        if (registry === 'internal') continue;
+        dncProviders.set(registry, new DbBackedRegistry(registry, dncLists));
+      }
+    }
+  }
+
   const dnc = new DncService({
     internal: (scope, e164) => repositories.leads.isSuppressed(scope, e164),
-    providers: httpRegistriesFromEnv(config.DNC_REGISTRY_PROVIDERS, logger, knownRegistries),
+    providers: dncProviders,
     logger,
   });
 
@@ -557,6 +604,7 @@ export function createContainer(opts: ContainerOptions = {}): Container {
   // configured the only real list is the workspace's own suppression list, and an
   // operator should learn that from the boot log rather than from an audit.
   logger.info('dnc screening', {
+    source: config.DNC_SOURCE,
     statutoryRegistries: dnc.configured,
     internalListAlwaysScreened: true,
     unscreenableRefused: config.DNC_REQUIRE_SCREENING,
@@ -604,12 +652,26 @@ export function createContainer(opts: ContainerOptions = {}): Container {
     roles: new RoleService(repositories.roles, audit),
     knowledge: createKnowledgeService({
       vectorStore,
-      // Per-workspace BYOK embedder: reuses the workspace's OpenAI key. null (no key)
-      // → the knowledge service falls back to its lexical engine.
+      /**
+       * Per-workspace BYOK embedder. null (no key) → the knowledge service falls
+       * back to its lexical engine, so RAG degrades rather than breaks.
+       *
+       * The credential follows EMBEDDINGS_PROVIDER: Azure keys live under the
+       * workspace's Azure credential, not its OpenAI one, so reading `openai.apiKey`
+       * for an Azure deployment would silently find nothing and drop to lexical
+       * search with no explanation.
+       */
       embedderFor: async (scope) => {
         try {
           const resolver = await providerCredentials.resolverFor(scope);
-          return createEmbedder({ apiKey: await resolver.get('openai.apiKey'), model: config.EMBEDDINGS_MODEL });
+          const secretKey =
+            config.EMBEDDINGS_PROVIDER === 'azure-openai' ? 'azure-openai.apiKey' : 'openai.apiKey';
+          return createEmbedder({
+            apiKey: await resolver.get(secretKey),
+            model: config.EMBEDDINGS_MODEL,
+            dims: config.EMBEDDINGS_DIMS,
+            baseUrl: config.EMBEDDINGS_BASE_URL,
+          });
         } catch {
           return null;
         }
@@ -623,6 +685,7 @@ export function createContainer(opts: ContainerOptions = {}): Container {
     compliance: complianceChain,
     jurisdictions,
     dnc,
+    dncLists,
     outboundGuard: new OutboundGuard({
       chain: complianceChain,
       audit: repositories.dispatchAudit,

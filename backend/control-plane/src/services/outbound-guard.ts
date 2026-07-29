@@ -168,8 +168,15 @@ export class OutboundGuard {
           e164: input.toNumber,
           country,
           registries: rule.dncRegistries,
+          at,
         })
-      : { onList: false, matched: [], screened: [], unavailable: [...rule.dncRegistries] };
+      : {
+          onList: false,
+          matched: [],
+          screened: [],
+          unavailable: [...rule.dncRegistries],
+          unavailableReasons: {},
+        };
 
     const ctx: DispatchContext = {
       profile,
@@ -182,6 +189,7 @@ export class OutboundGuard {
       calleeHoliday: holidayOn(country, calleeLocalDate(at, country, null)),
       onDncList: screening.onList,
       dncUnavailable: screening.unavailable,
+      dncUnavailableReasons: screening.unavailableReasons,
       requireDncScreening: this.deps.requireDncScreening,
       attemptsSoFar: 0,
       // A manual dial carries no stored consent record; the US rule therefore blocks
@@ -244,6 +252,7 @@ export class OutboundGuard {
         dncScreened: screening.screened,
         dncMatched: screening.matched,
         dncUnavailable: screening.unavailable,
+      dncUnavailableReasons: screening.unavailableReasons,
         country: rule.country,
         consentModel: rule.consentModel,
         aiDisclosureRequired: rule.aiDisclosureRequired,

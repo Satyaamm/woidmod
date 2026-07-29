@@ -603,6 +603,16 @@ export interface OverviewMetrics {
   costTodayUsd: number;
   latencySeries: Array<{ t: string; p50: number; p95: number }>;
   callVolumeSeries: Array<{ t: string; inbound: number; outbound: number }>;
+  /**
+   * The turn-latency waterfall. `measuredMs` is null for a stage nothing
+   * instruments — distinct from 0, which would mean "measured as instant".
+   */
+  latencyByStage: Array<{
+    key: string;
+    label: string;
+    budgetMs: number;
+    measuredMs: number | null;
+  }>;
 }
 
 // ===========================================================================

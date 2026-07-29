@@ -35,7 +35,7 @@ export const postalAddressSchema = z.object({
   country: isoCountry,
 });
 
-export const regionSchema = z.enum(['us-east', 'us-west', 'eu-west', 'eu-central']);
+export const regionSchema = z.enum(['us-east', 'us-west', 'eu-west', 'eu-central', 'ap-south']);
 export const modeSchema = z.enum(['test', 'live']);
 
 /**
@@ -60,12 +60,13 @@ export const workspaceSlugSchema = slugSchema('workspace');
 /** Region -> the jurisdiction its data physically sits in. Drives residency checks. */
 export const REGION_META: Record<
   z.infer<typeof regionSchema>,
-  { label: string; country: string; dataBloc: 'US' | 'EU' }
+  { label: string; country: string; dataBloc: 'US' | 'EU' | 'IN' }
 > = {
   'us-east': { label: 'US East (Virginia)', country: 'US', dataBloc: 'US' },
   'us-west': { label: 'US West (Oregon)', country: 'US', dataBloc: 'US' },
   'eu-west': { label: 'EU West (Ireland)', country: 'IE', dataBloc: 'EU' },
   'eu-central': { label: 'EU Central (Frankfurt)', country: 'DE', dataBloc: 'EU' },
+  'ap-south': { label: 'India (Mumbai)', country: 'IN', dataBloc: 'IN' },
 };
 
 // ---------------------------------------------------------------------------

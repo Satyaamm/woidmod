@@ -54,7 +54,7 @@ export class StaleRegistrySnapshot extends Error {}
  * missed because of a space, so both sides are normalised to digits and matched
  * on the national significant number.
  */
-function digitsOf(value: string): string {
+export function digitsOf(value: string): string {
   return value.replace(/\D+/g, '');
 }
 
@@ -65,7 +65,7 @@ function digitsOf(value: string): string {
  * form — so a `+15550100000` dial matches a `5550100000` file entry. Keeping both
  * avoids a country-code assumption for everything else.
  */
-function keysFor(e164: string): string[] {
+export function keysFor(e164: string): string[] {
   const digits = digitsOf(e164);
   if (!digits) return [];
   const keys = [digits];

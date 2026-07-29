@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ApiOutlined,
   BranchesOutlined,
@@ -397,6 +397,7 @@ export function PipelineTab({
   const { message } = App.useApp();
   const [form] = Form.useForm<PipelineConfig>();
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [llmProvider, setLlmProvider] = useState(agent.pipeline.llmProvider);
   const p = agent.pipeline;
 
@@ -432,6 +433,7 @@ export function PipelineTab({
     setSaving(true);
     try {
       await agentApi.update(agent.id, { pipeline: { ...p, ...values } });
+      setDirty(false);
       message.success('Pipeline saved. Publish the agent to put it on live calls.');
     } catch (err) {
       message.error((err as Error).message);
@@ -439,6 +441,42 @@ export function PipelineTab({
       setSaving(false);
     }
   };
+
+  /**
+   * Warn before unsaved pipeline edits are thrown away.
+   *
+   * The form saves on an explicit button, so switching tab, following a link or
+   * closing the tab silently discarded the change — and the fields here (STT
+   * vendor, model, endpointing) are exactly the ones someone edits, gets
+   * distracted from, and later believes they saved.
+   *
+   * `beforeunload` covers closing and reloading. In-app navigation is caught by
+   * intercepting clicks on links during the capture phase, because the App
+   * Router gives no navigation-blocking hook — a router event would be cleaner,
+   * and this is the honest workaround until one exists.
+   */
+  useEffect(() => {
+    if (!dirty) return;
+
+    const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    const onClick = (e: MouseEvent) => {
+      const anchor = (e.target as HTMLElement | null)?.closest?.('a[href]');
+      if (!anchor) return;
+      // Modified clicks open a new tab and leave this one intact — nothing is lost.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      if (!window.confirm('Discard unsaved pipeline changes?')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, [dirty]);
 
   return (
     <Row gutter={[12, 12]}>
@@ -448,9 +486,16 @@ export function PipelineTab({
           title="Pipeline"
           extra={
             editable ? (
-              <Button type="primary" size="small" loading={saving} onClick={save}>
-                Save pipeline
-              </Button>
+              <Flex align="center" gap={8}>
+                {dirty && (
+                  <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                    Unsaved changes
+                  </Typography.Text>
+                )}
+                <Button type="primary" size="small" loading={saving} onClick={save} disabled={!dirty}>
+                  Save pipeline
+                </Button>
+              </Flex>
             ) : undefined
           }
         >
@@ -485,7 +530,13 @@ export function PipelineTab({
               />
             )
           )}
-          <Form form={form} layout="vertical" initialValues={p} disabled={!editable}>
+          <Form
+            form={form}
+            layout="vertical"
+            initialValues={p}
+            disabled={!editable}
+            onValuesChange={() => setDirty(true)}
+          >
             <Row gutter={12}>
               <Col span={12}>
                 <Form.Item name="sttProvider" label="Speech to text">
@@ -578,14 +629,31 @@ export function PipelineTab({
       </Col>
 
       <Col xs={24} xl={10}>
-        <Card size="small" title="Latency budget" extra={<Tag bordered={false}>target 400 ms</Tag>}>
+        {/*
+          Budgets, not measurements — and it says so on every row. These are the
+          per-stage design targets; what this agent ACTUALLY spends per stage is on
+          Analytics, which reads the call log. The total is summed rather than
+          asserted: the tag used to read "target 400 ms" while the rows added up
+          to 414.
+        */}
+        <Card
+          size="small"
+          title="Latency budget"
+          extra={
+            <Tooltip title="Design targets for each stage of a turn. Measured latency is on the Analytics page.">
+              <Tag bordered={false}>
+                target {formatMs(stages.reduce((sum, s) => sum + s.budget, 0))}
+              </Tag>
+            </Tooltip>
+          }
+        >
           <Flex vertical gap={12}>
             {stages.map((stage) => (
               <div key={stage.key}>
                 <Flex justify="space-between" align="baseline">
                   <Typography.Text>{stage.label}</Typography.Text>
                   <Typography.Text className="tabular" type="secondary">
-                    {formatMs(stage.budget)}
+                    {formatMs(stage.budget)} budget
                   </Typography.Text>
                 </Flex>
                 <Tooltip title={stage.value}>

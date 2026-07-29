@@ -986,3 +986,44 @@ export type DispatchAuditRow = typeof dispatchAudit.$inferSelect;
 export type NewDispatchAuditRow = typeof dispatchAudit.$inferInsert;
 export type TenantKeyRow = typeof tenantKeys.$inferSelect;
 export type NewTenantKeyRow = typeof tenantKeys.$inferInsert;
+
+// ---------------------------------------------------------------------------
+
+/**
+ * A do-not-call extract the tenant has licensed and loaded.
+ *
+ * One row per registry per org. `snapshotAt` is when the REGISTRY produced the
+ * extract, not when it was uploaded: the screening obligation is to check a
+ * current list (31 days under the US TSR), so the freshness clock has to run from
+ * the registry's date or a year-old file would look compliant the day it landed.
+ */
+export const dncSnapshots = pgTable(
+  'dnc_snapshots',
+  {
+    orgId: text('org_id').notNull(),
+    registry: text('registry').notNull(),
+    snapshotAt: timestamp('snapshot_at', { withTimezone: true, mode: 'date' }).notNull(),
+    loadedAt: timestamp('loaded_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    loadedBy: text('loaded_by'),
+    source: text('source').notNull().default(''),
+    entryCount: integer('entry_count').notNull().default(0),
+    maxAgeDays: integer('max_age_days'),
+    /** Area codes the subscription covers; empty = full-registry extract. */
+    areaCodes: text('area_codes').array().notNull().default([]),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.orgId, t.registry] }) }),
+);
+
+/** Listed numbers, stored as normalised national digits — the form registries publish. */
+export const dncNumbers = pgTable(
+  'dnc_numbers',
+  {
+    orgId: text('org_id').notNull(),
+    registry: text('registry').notNull(),
+    digits: text('digits').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.orgId, t.registry, t.digits] }),
+    orgRegistryIdx: index('dnc_numbers_org_registry_idx').on(t.orgId, t.registry),
+  }),
+);

@@ -135,6 +135,6 @@ export interface ProviderMeta {
   /** Measured time-to-first-byte, for provider selection. */
   typicalTtfbMs?: number;
   /** Where this provider may be used — a US vendor can't serve an EU-only workspace. */
-  allowedBlocs?: Array<'US' | 'EU'>;
+  allowedBlocs?: Array<'US' | 'EU' | 'IN'>;
   selfHosted?: boolean;
 }

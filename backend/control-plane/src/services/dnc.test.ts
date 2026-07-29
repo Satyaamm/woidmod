@@ -112,7 +112,7 @@ describe('dnc_screening chain rule', () => {
       base({ dncUnavailable: ['fr_bloctel'] }),
     );
     assert.equal(result.value.allowed, false);
-    assert.match(result.value.reason, /cannot screen fr_bloctel/);
+    assert.match(result.value.reason, /cannot screen FR: fr_bloctel/);
   });
 
   test('allows it when the deployment has accepted the gap', async () => {
@@ -195,7 +195,9 @@ describe('OutboundGuard + screening', () => {
     );
 
     assert.equal(decision.allowed, false);
-    assert.match(decision.reason, /cannot screen fr_bloctel/);
+    // The reason names the registry AND why it could not answer, so the operator
+    // knows whether to configure a source or refresh an expired one.
+    assert.match(decision.reason, /cannot screen FR: fr_bloctel \(no screening source configured/);
     assert.deepEqual(audit.entries[0]!.ruleSnapshot!.dncUnavailable, ['fr_bloctel']);
     assert.deepEqual(audit.entries[0]!.ruleSnapshot!.dncScreened, ['internal']);
   });

@@ -116,6 +116,17 @@ def build_stt(config: AgentConfig):
         assemblyai = _need("assemblyai")
         return assemblyai.STT(api_key=config.secret("assemblyai.apiKey", "ASSEMBLYAI_API_KEY"))
 
+    if p == "sarvam-stt":
+        # Indian languages. Sarvam wants the FULL locale ("hi-IN", "ta-IN"), not the
+        # two-letter short form every other vendor here takes — passing "hi" makes it
+        # fall back to its default and quietly transcribe the wrong language.
+        sarvam = _need("sarvam")
+        return sarvam.STT(
+            model="saarika:v2.5",
+            language=lang if "-" in lang else "en-IN",
+            api_key=config.secret("sarvam.apiKey", "SARVAM_API_KEY"),
+        )
+
     if p == "cartesia-stt":
         # One Cartesia account serves both STT and TTS, so the secret is shared
         # with cartesia-tts — a customer adds the key once.
@@ -306,6 +317,35 @@ def build_tts(config: AgentConfig):
     lang = _short(config.language)
     voice = config.voice_id
 
+    if p == "inworld-tts":
+        inworld = _need("inworld")
+        return inworld.TTS(
+            voice=voice or "Ashley",
+            language=config.language,
+            api_key=config.secret("inworld.apiKey", "INWORLD_API_KEY"),
+        )
+
+    if p == "fishaudio-tts":
+        # `reference_id` is the voice; Fish calls it that rather than voice_id, and it
+        # is the id of a library or cloned voice, not a name.
+        fishaudio = _need("fishaudio")
+        return fishaudio.TTS(
+            reference_id=voice or None,
+            api_key=config.secret("fishaudio.apiKey", "FISH_API_KEY"),
+        )
+
+    if p == "sarvam-tts":
+        # Same Sarvam account as the STT side — the customer adds one key.
+        # `target_language_code` is the full locale and the docs are explicit that it
+        # should be set rather than defaulted, so the script matches the text.
+        sarvam = _need("sarvam")
+        return sarvam.TTS(
+            model="bulbul:v2",
+            target_language_code=config.language if "-" in config.language else "en-IN",
+            speaker=voice or "anushka",
+            api_key=config.secret("sarvam.apiKey", "SARVAM_API_KEY"),
+        )
+
     if p == "cartesia-tts":
         cartesia = _need("cartesia")
         return cartesia.TTS(
@@ -378,7 +418,7 @@ def build_tts(config: AgentConfig):
 
 _STT_SUPPORTED = [
     "deepgram-stt", "assemblyai-stt", "cartesia-stt",
-    "azure-speech-stt", "speechmatics-stt", "soniox-stt", "google-stt",
+    "azure-speech-stt", "speechmatics-stt", "soniox-stt", "google-stt", "sarvam-stt",
 ]
 _LLM_SUPPORTED = [
     "anthropic-llm", "openai-llm", "gemini-llm", "groq-llm",
@@ -386,7 +426,8 @@ _LLM_SUPPORTED = [
 ]
 _TTS_SUPPORTED = [
     "cartesia-tts", "elevenlabs-tts", "openai-tts",
-    "azure-tts", "google-tts", "rime-tts",
+    "azure-tts", "google-tts", "rime-tts", "sarvam-tts",
+    "inworld-tts", "fishaudio-tts",
 ]
 
 
