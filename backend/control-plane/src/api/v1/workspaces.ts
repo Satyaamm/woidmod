@@ -16,6 +16,12 @@ import { orgDetailsInput } from '../../domain/auth-schemas.js';
 import { require_, requireWorkspace, type TenantScope } from '../../domain/tenant.js';
 import { NotFoundError } from '../../repositories/types.js';
 import { taxIdLabelFor } from '../../services/compliance.js';
+import { config } from '../../config.js';
+import {
+  LATENCY_STAGES,
+  parseLatencyBudgets,
+  type LatencyStageKey,
+} from '../../services/latency-budget.js';
 import { buildBillingAccount, buildUsageSummary, type UsageCall } from '../../services/billing.js';
 import { catalogEntry } from '../../providers/catalog.js';
 import { ttsFactories } from '../../providers/factories/speech.js';
@@ -86,23 +92,24 @@ function buildOverview(calls: Array<Awaited<ReturnType<Container['services']['ca
     return xs.length ? percentile(xs, 0.5) : null;
   };
 
-  const latencyByStage = [
-    { key: 'endpointing', label: 'Endpointing', budgetMs: 94, measuredMs: null as number | null },
-    { key: 'stt', label: 'ASR finalize', budgetMs: 40, measuredMs: null as number | null },
-    {
-      key: 'llm',
-      label: 'LLM TTFT',
-      budgetMs: 88,
-      measuredMs: stageMedian((c) => c.stageLatencyMs?.llmTtftMs),
-    },
-    {
-      key: 'tts',
-      label: 'TTS TTFB',
-      budgetMs: 112,
-      measuredMs: stageMedian((c) => c.stageLatencyMs?.ttsTtfbMs),
-    },
-    { key: 'network', label: 'Network', budgetMs: 58, measuredMs: null as number | null },
-  ];
+  // Budgets come from config, measurements from the calls. Only LLM TTFT and TTS
+  // TTFB are instrumented — the worker emits `llm.first_token` and `tts.first_audio`;
+  // nothing emits endpointing, ASR-finalize or network, so those stay null and the UI
+  // says "not measured" rather than printing the budget as though it were one.
+  // No budgets configured → every stage reports `budgetMs: null` and the card shows
+  // measurements without asserting a target nobody chose.
+  const budgets = parseLatencyBudgets(config.LATENCY_BUDGETS_MS ?? '');
+  const measuredBy: Partial<Record<LatencyStageKey, () => number | null>> = {
+    llm: () => stageMedian((c) => c.stageLatencyMs?.llmTtftMs),
+    tts: () => stageMedian((c) => c.stageLatencyMs?.ttsTtfbMs),
+  };
+
+  const latencyByStage = LATENCY_STAGES.map((stage) => ({
+    key: stage.key,
+    label: stage.label,
+    budgetMs: budgets[stage.key] ?? null,
+    measuredMs: measuredBy[stage.key]?.() ?? null,
+  }));
 
   return {
     activeCalls: active.length,

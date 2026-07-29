@@ -604,13 +604,17 @@ export interface OverviewMetrics {
   latencySeries: Array<{ t: string; p50: number; p95: number }>;
   callVolumeSeries: Array<{ t: string; inbound: number; outbound: number }>;
   /**
-   * The turn-latency waterfall. `measuredMs` is null for a stage nothing
-   * instruments — distinct from 0, which would mean "measured as instant".
+   * The turn-latency waterfall.
+   *
+   * `measuredMs` is null for a stage nothing instruments — distinct from 0, which
+   * would mean "measured as instant". `budgetMs` is null when the deployment has
+   * set no target for that stage; the card then reports the measurement and claims
+   * no opinion about whether it is good.
    */
   latencyByStage: Array<{
     key: string;
     label: string;
-    budgetMs: number;
+    budgetMs: number | null;
     measuredMs: number | null;
   }>;
 }
