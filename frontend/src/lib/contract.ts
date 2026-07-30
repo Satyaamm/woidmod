@@ -571,6 +571,12 @@ export interface ProviderOption {
   runnable?: boolean;
   /** Where to get a key, for the "no key" path. */
   keyUrl?: string;
+  /**
+   * Model ids this vendor exposes. A shortlist, not a whitelist — the field stays
+   * free-text because a customer's own deployment or gateway can expose models
+   * this catalog has never heard of.
+   */
+  models?: string[];
 }
 
 export interface PlatformCapabilities {
@@ -585,7 +591,7 @@ export interface PlatformCapabilities {
 
 export interface ProviderHealth {
   key: string;
-  kind: 'stt' | 'llm' | 'tts';
+  kind: ProviderKind;
   state: 'closed' | 'open' | 'half-open';
 }
 
@@ -1223,6 +1229,16 @@ export interface NumberReputation {
   lastCheckedAt: string | null;
 }
 
+/**
+ * Whether calls to this number actually reach us.
+ *
+ * Owning a number and receiving calls on it are two different facts, and only one
+ * of them is what the customer bought. `pending` means the wiring has not happened
+ * yet (usually a missing setting, named in `inboundError`); `unsupported` means the
+ * carrier has no API for it and the console step is manual.
+ */
+export type InboundStatus = 'pending' | 'connected' | 'unsupported' | 'failed';
+
 export interface PhoneNumber {
   id: string;
   orgId: string;
@@ -1239,8 +1255,20 @@ export interface PhoneNumber {
   monthlyCostUsd: number;
   assignedAgentId: string | null;
   status: PhoneNumberStatus;
+  inbound: InboundStatus;
+  /** Why inbound is not connected, phrased as the next action. Null when it is. */
+  inboundError: string | null;
   purchasedAt: string;
   releasedAt: string | null;
+}
+
+/**
+ * Which carrier answered a number search, and whether it was the built-in mock.
+ * `simulated` inventory is not buyable in any real sense — the numbers do not exist.
+ */
+export interface NumberCarrierInfo {
+  key: string;
+  simulated: boolean;
 }
 
 /** A number offered by the upstream provider but not yet owned. */
@@ -1433,7 +1461,12 @@ export interface CreateRoleInput {
 // again: reads return `secretHints` only.
 // ===========================================================================
 
-export type ProviderKind = 'stt' | 'llm' | 'tts';
+/**
+ * What a stored credential is for. `telephony` is a carrier account (Twilio,
+ * Telnyx) — BYOK in the same sense as a model key: the customer's account, their
+ * numbers, their billing.
+ */
+export type ProviderKind = 'stt' | 'llm' | 'tts' | 'telephony';
 
 export type ProviderCredentialStatus = 'unverified' | 'valid' | 'invalid' | 'expired';
 

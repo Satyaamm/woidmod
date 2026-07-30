@@ -15,6 +15,7 @@ import { AssignAgentControl } from './AssignAgentControl';
 import {
   AttestationBadge,
   CapabilityTags,
+  InboundTag,
   NumberStatusTag,
   ReputationTag,
   numberTypeLabel,
@@ -143,6 +144,14 @@ export function NumbersTable({
       key: 'status',
       width: 110,
       render: (_, n) => <NumberStatusTag status={n.status} />,
+    },
+    {
+      // A number that is `active` but not routed here rings nowhere. That was
+      // invisible in this table, so the list is where it now shows.
+      title: 'Inbound',
+      key: 'inbound',
+      width: 130,
+      render: (_, n) => <InboundTag status={n.inbound} reason={n.inboundError} />,
     },
     {
       title: '',

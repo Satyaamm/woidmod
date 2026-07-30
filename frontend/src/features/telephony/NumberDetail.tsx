@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ReloadOutlined } from '@ant-design/icons';
+import { ApiOutlined, ReloadOutlined } from '@ant-design/icons';
 import {
   App,
   Button,
@@ -31,6 +31,7 @@ import { AssignAgentControl } from './AssignAgentControl';
 import {
   AttestationBadge,
   CapabilityTags,
+  InboundTag,
   NumberStatusTag,
   ReputationTag,
   numberTypeLabel,
@@ -58,6 +59,29 @@ function ConfigTab({
   workspaceId: string;
   onChanged: () => void;
 }) {
+  const { message } = App.useApp();
+  const [connecting, setConnecting] = useState(false);
+
+  /*
+   * Purchase already tries to wire inbound; this is the retry for the cases it
+   * could not — the platform URL configured afterwards, a carrier outage, a key
+   * fixed since. Without it the only recovery was to release the number and buy
+   * another one.
+   */
+  const connect = async () => {
+    setConnecting(true);
+    try {
+      const updated = await numberApi.connectInbound(number.id, workspaceId);
+      if (updated.inbound === 'connected') message.success('Inbound calls now reach this platform.');
+      else message.warning(updated.inboundError ?? 'Inbound is still not connected.');
+      onChanged();
+    } catch (err) {
+      message.error((err as Error).message);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   return (
     <Row gutter={[12, 12]}>
       <Col xs={24} xl={14}>
@@ -81,6 +105,9 @@ function ConfigTab({
             <Descriptions.Item label="Status">
               <NumberStatusTag status={number.status} />
             </Descriptions.Item>
+            <Descriptions.Item label="Inbound">
+              <InboundTag status={number.inbound} reason={number.inboundError} />
+            </Descriptions.Item>
             <Descriptions.Item label="Monthly cost">
               <span className="tabular">{formatUsd(number.monthlyCostUsd)}</span>
             </Descriptions.Item>
@@ -101,6 +128,26 @@ function ConfigTab({
             workspaceId={workspaceId}
             onChanged={onChanged}
           />
+
+          {number.inbound !== 'connected' && (
+            <>
+              <Typography.Paragraph
+                type={number.inbound === 'failed' ? 'danger' : 'warning'}
+                style={{ fontSize: 13, marginTop: 16, marginBottom: 8 }}
+              >
+                {number.inboundError ??
+                  'The carrier is not pointed at this platform yet, so calls to this number will not reach the agent.'}
+              </Typography.Paragraph>
+              <Button
+                icon={<ApiOutlined />}
+                loading={connecting}
+                onClick={connect}
+                disabled={number.inbound === 'unsupported'}
+              >
+                {number.inbound === 'unsupported' ? 'Set up in carrier console' : 'Connect inbound'}
+              </Button>
+            </>
+          )}
         </Card>
       </Col>
     </Row>

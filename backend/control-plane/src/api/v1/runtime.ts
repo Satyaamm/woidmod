@@ -27,6 +27,7 @@ import type { Container } from '../../container.js';
 import type { ApiEnv } from '../middleware/index.js';
 import { require_, requireWorkspace } from '../../domain/tenant.js';
 import { requirementsFor, checkEligibility } from '../../compliance/provider-eligibility.js';
+import { resolveTenantPosture } from '../../compliance/tenant-residency.js';
 import {
   allSecretFieldNames,
   catalogEntry,
@@ -58,8 +59,34 @@ export function runtimeRoutes(container: Container) {
     // into HIPAA mode or moved between blocs after an agent was configured, and
     // that must invalidate the agent rather than silently keep routing data.
     const requirements = requirementsFor(workspace.region, workspace.compliance);
+    // Residency for Azure/Bedrock/Vertex/Speechmatics follows the CREDENTIAL's own
+    // region, not a static posture — the tenant chose where their resource lives.
+    const credentialList = await container.services.providerCredentials.list(scope);
+    const configOf = (key: string) =>
+      credentialList.find((cr) => cr.providerKey === key)?.config as
+        | Record<string, unknown>
+        | undefined;
     const ineligible = wanted
-      .map((key) => ({ key, result: checkEligibility(container.compliance.postures.get(key), requirements) }))
+      .map((key) => {
+        const resolved = resolveTenantPosture(key, container.compliance.postures.get(key), configOf(key));
+        if (resolved.kind === 'region-missing') {
+          return {
+            key,
+            result: {
+              eligible: false,
+              reasons: [
+                {
+                  code: 'residency_mismatch' as const,
+                  message:
+                    `the ${key} credential does not say which region the resource is in — ` +
+                    `set "${resolved.field}" on the credential so residency can be verified`,
+                },
+              ],
+            },
+          };
+        }
+        return { key, result: checkEligibility(resolved.posture, requirements) };
+      })
       .filter((x) => !x.result.eligible);
 
     if (ineligible.length) {

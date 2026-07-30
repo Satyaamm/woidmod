@@ -160,6 +160,16 @@ const envSchema = z.object({
   LIVEKIT_URL: z.string().default(''),
   LIVEKIT_API_KEY: z.string().default(''),
   LIVEKIT_API_SECRET: z.string().default(''),
+  /**
+   * The registered name of the orchestrator worker — it must match
+   * `@server.rtc_session(agent_name=...)` in backend/orchestrator, or LiveKit
+   * dispatches into a room nobody is listening on and the call is silence.
+   *
+   * It was written literally in three places (room tokens, SIP dispatch rules,
+   * outbound participants). Deploying a second worker under another name meant
+   * finding all three; here it is one value.
+   */
+  LIVEKIT_AGENT_NAME: z.string().default('woidmod'),
 
   // -- Object storage (S3-compatible: MinIO locally, S3/R2 in prod) -----------
   // For call recordings and transcripts.

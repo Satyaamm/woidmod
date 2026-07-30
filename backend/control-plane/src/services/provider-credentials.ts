@@ -30,8 +30,18 @@ import type { AuditLogger } from '../compliance/audit-log.js';
 import type { Logger, SecretResolver } from '../core/patterns/factory.js';
 import { ConflictError, NotFoundError } from '../repositories/types.js';
 import { verifyCredentialLive } from '../providers/verify.js';
+import { secretPrefixFor } from '../providers/catalog.js';
 
-export type ProviderKind = 'stt' | 'llm' | 'tts';
+/**
+ * What a stored credential is FOR.
+ *
+ * `telephony` is here because a carrier key is BYOK in exactly the same sense as a
+ * model key — the customer's Twilio account, their billing, their numbers. It was
+ * missing, so the container read `twilio.accountSid` from the resolver while the
+ * only way to get a value in there was a platform-wide env var: every tenant on a
+ * deployment shared one Twilio account, or bought no numbers at all.
+ */
+export type ProviderKind = 'stt' | 'llm' | 'tts' | 'telephony';
 
 /** What a verify/test call reports back. */
 export interface VerifyReport {
@@ -94,7 +104,7 @@ export interface ProviderCredentialRepository {
 }
 
 export const createCredentialInput = z.object({
-  kind: z.enum(['stt', 'llm', 'tts']),
+  kind: z.enum(['stt', 'llm', 'tts', 'telephony']),
   providerKey: z.string().min(1),
   name: z.string().min(1).max(120),
   /** Non-secret routing config, validated per-provider by its factory. */
@@ -192,6 +202,43 @@ export class ProviderCredentialService {
     return this.toView(saved);
   }
 
+  /**
+   * Update the non-secret routing config (region, endpoint, deployment…).
+   *
+   * This did not exist: rotate changed secrets only, so a credential created
+   * before a config field was added — Azure's `region`, say — could never gain
+   * it. The only way to declare where an existing resource lives was to delete
+   * the credential and start over, losing its verification history.
+   *
+   * Status drops back to `unverified` on purpose: the key has not changed, but
+   * what it points at has, and a key proven against one endpoint says nothing
+   * about another.
+   */
+  async updateConfig(
+    scope: WorkspaceScope,
+    id: string,
+    config: Record<string, string>,
+  ): Promise<ProviderCredentialView> {
+    require_(scope, 'provider:manage');
+    const existing = await this.repo.get(scope, id);
+    if (!existing) throw new NotFoundError('provider credential', id);
+
+    const saved = await this.repo.update(scope, id, {
+      // Merge, not replace: a PATCH that sets `region` must not blank `endpoint`.
+      config: { ...existing.config, ...config },
+      status: 'unverified',
+      updatedAt: new Date().toISOString(),
+    });
+
+    await this.audit.record(scope, 'apikey.created', {
+      resourceType: 'provider_credential',
+      resourceId: saved.id,
+      metadata: { providerKey: existing.providerKey, action: 'config_updated' },
+    });
+
+    return this.toView(saved);
+  }
+
   /** Rotate one or more secret fields without recreating the credential. */
   async rotate(
     scope: WorkspaceScope,
@@ -266,6 +313,15 @@ export class ProviderCredentialService {
           resolved.set(`${row.providerKey}.${field}`, value);
           // Also register the bare provider name so `openai-llm` and `openai` both work.
           resolved.set(`${row.providerKey.replace(/-(llm|stt|tts)$/, '')}.${field}`, value);
+          /*
+           * And the CANONICAL prefix from the catalog. The two aliases above cover
+           * every vendor whose prefix is just the key minus its kind suffix — but
+           * the catalog overrides Azure's to `azure.openai` / `azure.speech`
+           * (dots), and the runtime handover asks under exactly those names. The
+           * dash-form aliases never matched, so Azure keys decrypted, sat in this
+           * map, and were reported `missing` to the worker on every single call.
+           */
+          resolved.set(`${secretPrefixFor(row.providerKey)}.${field}`, value);
         } catch (e) {
           // A failed decrypt usually means the tenant key was crypto-shredded.
           // Degrade to the platform key rather than failing the call.

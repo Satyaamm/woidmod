@@ -3,6 +3,7 @@
 import { Space, Tag, Tooltip } from 'antd';
 import type {
   AttestationLevel,
+  InboundStatus,
   NumberCapability,
   NumberReputation,
   NumberType,
@@ -106,5 +107,47 @@ export function NumberStatusTag({ status }: { status: PhoneNumberStatus }) {
     <Tag color={meta.color} bordered={false} style={{ marginInlineEnd: 0, fontSize: 11 }}>
       {meta.label}
     </Tag>
+  );
+}
+
+const INBOUND: Record<InboundStatus, { color: string | undefined; label: string; hint: string }> = {
+  connected: {
+    color: 'green',
+    label: 'Inbound live',
+    hint: 'The carrier is pointed at this platform — calls to this number reach the assigned agent.',
+  },
+  pending: {
+    color: 'orange',
+    label: 'Inbound pending',
+    hint: 'The number is yours, but the carrier has not been pointed here yet, so calls to it will not reach an agent.',
+  },
+  unsupported: {
+    color: 'gold',
+    label: 'Inbound manual',
+    hint: 'This carrier has no API for inbound routing — it has to be set once in the carrier console.',
+  },
+  failed: {
+    color: 'red',
+    label: 'Inbound failed',
+    hint: 'The carrier refused the routing change. Calls to this number will not reach an agent until it succeeds.',
+  },
+};
+
+/**
+ * Owning a number and receiving calls on it are separate facts, and the second is
+ * the one that was silently missing: a purchase used to leave the carrier pointed
+ * nowhere with nothing in the UI saying so. The reason doubles as the tooltip, so
+ * the fix is one hover away rather than a support ticket.
+ */
+export function InboundTag({ status, reason }: { status: InboundStatus; reason?: string | null }) {
+  // A number stored before inbound was tracked has no status; unwired is the
+  // truthful reading of that, and it keeps an old row from breaking the table.
+  const meta = INBOUND[status] ?? INBOUND.pending;
+  return (
+    <Tooltip title={reason || meta.hint}>
+      <Tag color={meta.color} bordered={false} style={{ marginInlineEnd: 0, fontSize: 11 }}>
+        {meta.label}
+      </Tag>
+    </Tooltip>
   );
 }

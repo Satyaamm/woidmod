@@ -91,6 +91,17 @@ export class AgentService {
      * without it, stats stay at the stored zeros rather than throwing.
      */
     private readonly calls?: CallRepository,
+    /**
+     * Which vendors this workspace has actually connected, per kind.
+     *
+     * Optional so existing constructions keep working. Without it a new agent gets
+     * the fixed defaults, which is what shipped — and what sent every customer who
+     * brought their own vendor into a "connect deepgram-stt" wall they could only
+     * clear by editing a dropdown nobody told them about.
+     */
+    private readonly connectedProviders?: (
+      scope: WorkspaceScope,
+    ) => Promise<{ stt: string[]; llm: string[]; tts: string[] }>,
   ) {}
 
   async list(scope: WorkspaceScope, opts?: ListOptions) {
@@ -181,11 +192,45 @@ export class AgentService {
     });
   }
 
+  /**
+   * Pipeline slots the workspace's own connected providers can fill.
+   *
+   * Silent by design: a lookup failure (no resolver wired, credentials
+   * unreadable) returns nothing and the caller falls back to the defaults. A new
+   * agent that cannot be created because a *preference* could not be computed
+   * would be a worse outcome than one pointing at the wrong vendor.
+   */
+  private async preferredPipeline(
+    scope: WorkspaceScope,
+  ): Promise<Partial<typeof DEFAULT_PIPELINE>> {
+    if (!this.connectedProviders) return {};
+    try {
+      const connected = await this.connectedProviders(scope);
+      const out: Partial<typeof DEFAULT_PIPELINE> = {};
+      if (connected.stt[0]) out.sttProvider = connected.stt[0];
+      if (connected.llm[0]) out.llmProvider = connected.llm[0];
+      if (connected.tts[0]) out.ttsProvider = connected.tts[0];
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
   async create(scope: WorkspaceScope, input: CreateAgentInput): Promise<Agent> {
     require_(scope, 'agent:write');
 
     const workspace = await this.workspaces.get(scope, scope.workspaceId);
     if (!workspace) throw new NotFoundError('workspace', scope.workspaceId);
+
+    /*
+     * Start from what the customer has, not from what we shipped.
+     *
+     * The defaults exist so an agent is callable the moment the expected keys are
+     * added; they were never meant to override a workspace that already connected
+     * a different vendor. An explicit `input.pipeline` still wins — this only fills
+     * the slots the caller left unset.
+     */
+    const pipelineDefaults = { ...DEFAULT_PIPELINE, ...(await this.preferredPipeline(scope)) };
 
     const now = new Date().toISOString();
     const agent = agentSchema.parse({
@@ -200,7 +245,7 @@ export class AgentService {
       prompt: input.prompt,
       modality: input.modality ?? 'voice',
       voice: voiceConfigSchema.parse({ ...DEFAULT_VOICE, ...(input.voice ?? {}) }),
-      pipeline: pipelineConfigSchema.parse({ ...DEFAULT_PIPELINE, ...(input.pipeline ?? {}) }),
+      pipeline: pipelineConfigSchema.parse({ ...pipelineDefaults, ...(input.pipeline ?? {}) }),
       tools: [],
       flow: input.flow,
       createdAt: now,

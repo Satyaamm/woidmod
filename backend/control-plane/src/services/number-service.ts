@@ -15,6 +15,7 @@
  */
 
 import { newId } from '../domain/ids.js';
+import type { InboundRouter } from './inbound-router.js';
 import { require_, type TenantScope, type WorkspaceScope } from '../domain/tenant.js';
 import {
   availableNumberSchema,
@@ -139,6 +140,29 @@ export function localPresenceRuleFor(country: string): LocalPresenceRule | null 
  * The carrier-facing side, behind an interface so the service stays testable and
  * so Twilio/Telnyx/Sinch adapters can be registered in the container later.
  */
+/**
+ * A carrier rejected the request.
+ *
+ * Modelled rather than left as a bare Error because the caller's next action
+ * depends entirely on WHY: bad key → fix the credential; no inventory → search
+ * differently; carrier down → retry. All three arrived as `internal_error 500`,
+ * which told the customer nothing and looked like our fault when it was a wrong
+ * Twilio SID.
+ */
+export class CarrierError extends Error {
+  readonly code = 'carrier_error';
+  constructor(
+    message: string,
+    readonly carrier: string,
+    /** `auth` is the one the customer can fix themselves, so it is called out. */
+    readonly reason: 'auth' | 'not_available' | 'rejected' | 'unreachable',
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'CarrierError';
+  }
+}
+
 export interface NumberProvider {
   readonly key: string;
   search(query: SearchNumbersQuery): Promise<AvailableNumber[]>;
@@ -238,15 +262,38 @@ export class NumberService {
      * credentials are set.
      */
     private readonly providerFor?: (scope: WorkspaceScope) => Promise<NumberProvider | null>,
+    /**
+     * The platform side of inbound: the address the carrier sends calls to, and
+     * admitting the number on the media stack.
+     *
+     * A port rather than a URL string, because "the call reaches an agent" needs
+     * both halves and only one of them is the carrier's. Injected so this service
+     * stays testable and the composition root keeps its single responsibility for
+     * environment; absent, inbound is recorded as pending rather than assumed.
+     */
+    private readonly inboundRouter?: InboundRouter,
   ) {}
 
-  /** The carrier to use for this workspace: its BYOK provider, else the default. */
-  private async carrier(scope: WorkspaceScope): Promise<NumberProvider> {
+  /**
+   * The carrier to use for this workspace: its BYOK provider, else the default.
+   *
+   * `simulated` travels with it because the fallback is a MOCK: its search results
+   * are invented numbers that cannot receive a call. Buying one is legitimate while
+   * evaluating the product and a disaster if the customer believes it is real, so
+   * every surface that shows inventory is told which it is looking at.
+   */
+  private async resolveCarrier(
+    scope: WorkspaceScope,
+  ): Promise<{ provider: NumberProvider; simulated: boolean }> {
     if (this.providerFor) {
       const resolved = await this.providerFor(scope).catch(() => null);
-      if (resolved) return resolved;
+      if (resolved) return { provider: resolved, simulated: false };
     }
-    return this.provider;
+    return { provider: this.provider, simulated: true };
+  }
+
+  private async carrier(scope: WorkspaceScope): Promise<NumberProvider> {
+    return (await this.resolveCarrier(scope)).provider;
   }
 
   async list(scope: WorkspaceScope, opts?: PhoneNumberListOptions) {
@@ -268,10 +315,16 @@ export class NumberService {
   async search(scope: WorkspaceScope, query: SearchNumbersQuery): Promise<{
     items: AvailableNumber[];
     localPresence: LocalPresenceRule | null;
+    carrier: { key: string; simulated: boolean };
   }> {
     require_(scope, 'workspace:read');
-    const items = await (await this.carrier(scope)).search(query);
-    return { items, localPresence: localPresenceRuleFor(query.country) };
+    const { provider, simulated } = await this.resolveCarrier(scope);
+    const items = await provider.search(query);
+    return {
+      items,
+      localPresence: localPresenceRuleFor(query.country),
+      carrier: { key: provider.key, simulated },
+    };
   }
 
   /**
@@ -308,6 +361,12 @@ export class NumberService {
       numberType: 'local',
       capabilities: ['voice'],
       carrier,
+      /*
+       * A LOGICAL trunk: the bucket the dialer rate-limits per destination country
+       * against, and the grouping customers reason about ("our German numbers").
+       * It is deliberately NOT a LiveKit trunk id — origination goes through the
+       * configured outbound trunk, and this number is the caller ID on it.
+       */
       trunkId: input.trunkId ?? `trunk-${country.toLowerCase()}`,
       // Attestation is assigned by the originating carrier once the number is
       // in our OCN and the customer is vetted. Never claim A-level ourselves.
@@ -317,25 +376,78 @@ export class NumberService {
       monthlyCostUsd,
       assignedAgentId: input.agentId ?? null,
       status: 'active',
+      inbound: 'pending',
+      inboundError: null,
       purchasedAt: now,
       releasedAt: null,
     } satisfies Record<string, unknown>);
 
-    return this.numbers.create(scope, number);
+    const created = await this.numbers.create(scope, number);
+
+    /*
+     * Point the carrier at us immediately.
+     *
+     * Buying a number and then having to discover a separate "connect" step is how
+     * a customer ends up with a number that rings nowhere. Best-effort by design:
+     * a carrier that refuses the webhook update must not undo a purchase that has
+     * already been billed, so the failure is RECORDED on the number and retryable
+     * rather than thrown away.
+     */
+    return this.attachInbound(scope, created);
   }
 
   /**
-   * Connect a bought number to inbound SIP: point its carrier voice webhook at the
-   * given URL (our LiveKit-SIP TwiML), so a PSTN call to it reaches the agent.
+   * Connect a bought number to inbound SIP: point its carrier voice path at us.
+   *
+   * Returns the updated number rather than void so the caller can show the real
+   * state — this is the difference between "you own it" and "it rings here".
    */
-  async connectSip(scope: WorkspaceScope, numberId: string, voiceUrl: string): Promise<void> {
+  async connectSip(scope: WorkspaceScope, numberId: string): Promise<PhoneNumber> {
     require_(scope, 'number:manage');
-    const number = await this.get(scope, numberId);
-    const carrier = await this.carrier(scope);
-    if (!carrier.configureInbound) {
-      throw new ConflictError('the active carrier does not support automatic SIP configuration');
+    return this.attachInbound(scope, await this.get(scope, numberId));
+  }
+
+  /**
+   * Best-effort inbound wiring, recorded on the number.
+   *
+   * Never throws: both callers (purchase, manual retry) want the number back with
+   * an honest status, not an exception that hides which of the two facts is true.
+   */
+  private async attachInbound(scope: WorkspaceScope, number: PhoneNumber): Promise<PhoneNumber> {
+    const router = this.inboundRouter;
+    const blocked = router ? router.unavailable() : 'Inbound routing is not configured on this deployment.';
+    if (!router || blocked) {
+      return this.numbers.update(scope, number.id, { inbound: 'pending', inboundError: blocked });
     }
-    await carrier.configureInbound(number.e164, voiceUrl);
+
+    const carrier = await this.carrier(scope);
+
+    try {
+      /*
+       * Media stack FIRST. Pointing the carrier at a stack that will reject the
+       * INVITE produces the worst failure mode there is: everything reads as
+       * connected and the number rings once and dies, with the evidence only in
+       * LiveKit's logs.
+       */
+      await router.admit(number.e164);
+
+      if (!carrier.configureInbound) {
+        return this.numbers.update(scope, number.id, {
+          inbound: 'unsupported',
+          inboundError:
+            `${carrier.key} has no inbound-configuration API — point the number at ` +
+            `${router.webhookUrl} in the carrier console.`,
+        });
+      }
+
+      await carrier.configureInbound(number.e164, router.webhookUrl);
+      return this.numbers.update(scope, number.id, { inbound: 'connected', inboundError: null });
+    } catch (error) {
+      return this.numbers.update(scope, number.id, {
+        inbound: 'failed',
+        inboundError: error instanceof Error ? error.message.slice(0, 300) : String(error),
+      });
+    }
   }
 
   /** Release back to the carrier. Soft-deletes locally so call records resolve. */

@@ -19,7 +19,7 @@
 
 export interface ProviderCatalogEntry {
   key: string;
-  kind: 'stt' | 'llm' | 'tts';
+  kind: 'stt' | 'llm' | 'tts' | 'telephony';
   label: string;
   /** Non-secret routing fields (region, resource, deployment, project, location). */
   configFields: string[];
@@ -41,6 +41,19 @@ export interface ProviderCatalogEntry {
   optionalFields?: string[];
   /** Default values pre-filled into the form for fields with a sane default. */
   defaults?: Record<string, string>;
+  /**
+   * Model ids this vendor exposes, for the agent's model picker.
+   *
+   * The dashboard carried its own `MODEL_SUGGESTIONS` map, which is how an agent
+   * on Azure ended up showing `claude-haiku-4-5`: the list never changed with the
+   * provider and nothing reset a model that had stopped being valid. Declared here
+   * so there is one list, served by /capabilities.
+   *
+   * NOT exhaustive and not a whitelist — the field stays free-text because a
+   * customer's Azure deployment or OpenAI-compatible gateway can expose a model
+   * nobody here has heard of. This is the shortlist, not the boundary.
+   */
+  models?: string[];
   /**
    * Whether the orchestrator can actually run this vendor on a live call.
    *
@@ -141,10 +154,62 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     runnable: true,
   },
 
+  // -- Telephony carriers ----------------------------------------------------
+  /*
+   * A carrier key is BYOK in exactly the same sense as a model key: the customer's
+   * account, their billing, their numbers, their regulatory relationship. These
+   * entries were absent, so `kind` had no 'telephony' value and the credential form
+   * could not store one — the only Twilio account available to any tenant was a
+   * platform-wide pair of env vars.
+   *
+   * `runnable` is true because the control plane itself performs the ordering; it
+   * does not depend on a worker plugin the way speech and language do.
+   */
+  {
+    key: 'twilio',
+    kind: 'telephony',
+    label: 'Twilio',
+    configFields: [],
+    secretFields: ['accountSid', 'authToken'],
+    note:
+      'Account SID and Auth Token from the Twilio console. Numbers are bought on YOUR ' +
+      'account and billed to you; inbound calls are pointed at this platform automatically.',
+    keyUrl: 'https://console.twilio.com',
+    runnable: true,
+  },
+  {
+    key: 'telnyx',
+    kind: 'telephony',
+    label: 'Telnyx',
+    /*
+     * `connectionId` is what makes a bought Telnyx number ring here.
+     *
+     * Twilio takes a webhook URL per number, so buying a number is enough for us to
+     * wire it. Telnyx routes inbound through a Connection object the customer creates
+     * once, and the number is then pointed at that connection's id — there is no URL
+     * field to set. Without this the platform can buy Telnyx numbers it can never
+     * receive a call on, which is the worst of the possible outcomes: billed and dead.
+     *
+     * Optional because a customer buying outbound-only numbers should not be blocked
+     * from connecting the carrier at all; the number then records `inbound: pending`
+     * with this field named as the fix.
+     */
+    configFields: ['connectionId'],
+    optionalFields: ['connectionId'],
+    secretFields: ['apiKey'],
+    note:
+      'A V2 API key from the Telnyx portal. Inbound routing uses a Telnyx Connection ' +
+      'rather than a webhook URL — create one pointing at your LiveKit SIP host and ' +
+      'paste its id above so bought numbers are routed automatically.',
+    keyUrl: 'https://portal.telnyx.com/#/app/api-keys',
+    runnable: true,
+  },
+
   // -- LLM -------------------------------------------------------------------
   {
     key: 'anthropic-llm',
     kind: 'llm',
+    models: ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-1'],
     label: 'Anthropic',
     configFields: [],
     secretFields: ['apiKey'],
@@ -154,6 +219,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     key: 'openai-llm',
     kind: 'llm',
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'],
     label: 'OpenAI (or any OpenAI-compatible gateway)',
     // baseUrl lets an OpenAI-compatible gateway (LiteLLM, OpenRouter, vLLM,
     // Together, Fireworks, Ollama) be pointed at — which is how a customer
@@ -170,6 +236,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     key: 'gemini-llm',
     kind: 'llm',
+    models: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'],
     label: 'Google Gemini (AI Studio)',
     configFields: [],
     secretFields: ['apiKey'],
@@ -180,6 +247,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     key: 'groq-llm',
     kind: 'llm',
+    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
     label: 'Groq',
     configFields: [],
     secretFields: ['apiKey'],
@@ -190,6 +258,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     key: 'azure-openai-llm',
     kind: 'llm',
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1'],
     label: 'Azure OpenAI / AI Foundry',
     /*
      * `endpoint` exists because deriving the host from `resourceName` only ever
@@ -208,8 +277,19 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
      *   "base_url accepts both https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/
      *    and https://YOUR-RESOURCE-NAME.services.ai.azure.com/openai/v1/ formats."
      */
-    configFields: ['endpoint', 'resourceName', 'deploymentName', 'apiVersion'],
-    optionalFields: ['endpoint', 'resourceName', 'apiVersion'],
+    /*
+     * `region` is REQUIRED and was missing, which quietly made Azure unusable on any
+     * EU-pinned workspace: residency is derived from it (`blocForAzureRegion`), an
+     * absent region reads as non-EU, and the runtime gate then refuses the call with
+     * "providers not permitted for this workspace" — after the browser has already
+     * joined the room, so the caller sees nothing happen at all.
+     *
+     * It is the resource's Azure region (westeurope, swedencentral, eastus …), and
+     * it is a data-processing statement, not a routing hint: the endpoint says where
+     * to send the request, the region says which bloc the data lands in.
+     */
+    configFields: ['endpoint', 'region', 'resourceName', 'deploymentName', 'apiVersion'],
+    optionalFields: ['resourceName', 'apiVersion'],
     defaults: { apiVersion: '2024-10-21' },
     secretFields: ['apiKey'],
     note:
@@ -219,13 +299,15 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
       'just the resource name only if you are on the classic openai.azure.com host.) ' +
       'Deployment name is the label you chose when deploying — not the model name. ' +
       'Set API version to "v1" for the undated surface Microsoft recommends for new work. ' +
-      'Residency follows the resource region.',
+      'Region is your resource\'s Azure region (westeurope, swedencentral, eastus…) and it ' +
+      'decides residency — an EU-pinned workspace can only use an EU region.',
     keyUrl: 'https://ai.azure.com',
     runnable: true,
   },
   {
     key: 'bedrock-llm',
     kind: 'llm',
+    models: ['anthropic.claude-3-5-sonnet-20240620-v1:0', 'us.anthropic.claude-3-5-haiku-20241022-v1:0', 'amazon.nova-lite-v1:0'],
     label: 'AWS Bedrock',
     // SigV4 against bedrock-runtime.{region}.amazonaws.com. Region IS the residency.
     configFields: ['region'],
@@ -238,6 +320,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     key: 'vertex-llm',
     kind: 'llm',
+    models: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'],
     label: 'Google Vertex AI',
     configFields: ['projectId', 'location'],
     defaults: { location: 'us-central1' },

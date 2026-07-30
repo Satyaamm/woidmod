@@ -3,17 +3,17 @@
 /**
  * Voices & lexicon network layer.
  *
- * The voice catalogue and the pronunciation lexicon are both live now:
+ * The voice catalogue, the preview and the pronunciation lexicon are all live:
  * `GET /v1/workspaces/:id/voices` builds each of the workspace's own connected
- * TTS adapters and asks the vendor for its voices, and the lexicon is a plain
- * get/put. Only `voices/preview` is still absent — real synthesis needs
- * somewhere to host the clip — and it answers 501 rather than 404.
+ * TTS adapters and asks the vendor for its voices, `POST …/voices/preview`
+ * synthesises a phrase with the workspace's own credential and returns it inline,
+ * and the lexicon is a plain get/put.
  *
- * The `probe` wrapper stays for exactly that reason: a missing or unimplemented
- * route resolves to `null` so the UI can say "not built" instead of showing an
- * error, while a genuine failure (401, 500, a network outage) still throws and
- * still surfaces. Never let this collapse into "no data" — that is how a broken
- * page ends up looking like an empty one.
+ * The `probe` wrapper stays for deployments running an older control plane: a
+ * missing or unimplemented route resolves to `null` so the UI can say "not built"
+ * instead of showing an error, while a genuine failure (401, 500, a network
+ * outage) still throws and still surfaces. Never let this collapse into "no data"
+ * — that is how a broken page ends up looking like an empty one.
  */
 
 import { ApiError, http } from '@/lib/api';
@@ -71,8 +71,10 @@ export const voicesApi = {
     }),
 
   /**
-   * `POST /v1/workspaces/:id/voices/preview` — not implemented yet.
-   * Returns an audio URL, or `null` when the route is absent.
+   * `POST /v1/workspaces/:id/voices/preview` — synthesise a phrase and return it
+   * as a playable URL. `providerKey` matters: a voice id only means something to
+   * the vendor that issued it, so previewing an ElevenLabs voice through whichever
+   * provider happens to be first would fail on a valid voice.
    */
   preview: (
     workspaceId: string,

@@ -25,7 +25,20 @@ import {
 import { buildBillingAccount, buildUsageSummary, type UsageCall } from '../../services/billing.js';
 import { catalogEntry } from '../../providers/catalog.js';
 import { ttsFactories } from '../../providers/factories/speech.js';
+import type { AudioChunk } from '../../providers/types.js';
+import { wavDataUrl } from '../../services/audio-wav.js';
 import { z } from 'zod';
+
+/** Long enough to judge a voice, short enough that it is never a synthesis job. */
+const previewVoiceInput = z.object({
+  text: z.string().trim().min(1).max(300),
+  voiceId: z.string().min(1),
+  language: z.string().min(2).max(12),
+  /** Which connected vendor to synthesise with. Absent → the workspace's first. */
+  providerKey: z.string().min(1).optional(),
+});
+
+const PREVIEW_TIMEOUT_MS = 15_000;
 
 /** Body for PUT /workspaces/:id/lexicon — the client strips its row `id` before sending. */
 const lexiconPutInput = z.object({
@@ -284,6 +297,8 @@ export function workspaceRoutes(container: Container) {
       preview?: string;
     }> = [];
     const problems: Array<{ providerKey: string; label: string; reason: string }> = [];
+    /** Connected TTS vendors whose voice list this endpoint cannot enumerate. */
+    const unlistable: Array<{ providerKey: string; label: string; reason: string }> = [];
 
     const credentials = (await container.services.providerCredentials.list(scope)).filter(
       (cred) => cred.kind === 'tts',
@@ -295,8 +310,24 @@ export function workspaceRoutes(container: Container) {
       const factory = factories.get(cred.providerKey);
       const label = catalogEntry(cred.providerKey)?.label ?? cred.providerKey;
       if (!factory) {
-        // A vendor the worker runs but the control plane has no in-process
-        // adapter for (Cartesia Ink STT's sibling case). Not an error.
+        /*
+         * A vendor the WORKER can run but the control plane has no in-process
+         * adapter for — Sarvam, Inworld, Fish Audio.
+         *
+         * This used to `continue` silently, so a customer who connected Fish Audio
+         * opened the voice picker, saw none of their voices, and had nothing to
+         * tell them why. Silence reads as "this provider has no voices", which is
+         * false. Report it instead: the voice still works on a call, it just has to
+         * be typed rather than picked.
+         */
+        unlistable.push({
+          providerKey: cred.providerKey,
+          label,
+          reason:
+            'Voices for this vendor cannot be listed here yet — set the voice id on the ' +
+            'agent (Sarvam speaker, Inworld voice, or Fish Audio reference id) and it will ' +
+            'be used on the call.',
+        });
         continue;
       }
       try {
@@ -324,26 +355,104 @@ export function workspaceRoutes(container: Container) {
       items: voices,
       /** Providers that failed to answer — surfaced so the UI can say which. */
       problems,
+      /** Connected, usable on a call, but not enumerable here. Not an error. */
+      unlistable,
       /** How many TTS providers this workspace has connected at all. */
       connectedProviders: credentials.length,
     });
   });
 
   /**
-   * Voice preview. Deferred: real synthesis needs a resolved BYOK TTS provider plus
-   * somewhere to host the audio (S3 — Phase 2). 501 so the client degrades honestly
-   * rather than playing a fake clip.
+   * Voice preview — synthesise a phrase with the workspace's OWN TTS credential.
+   *
+   * This was a 501 on the theory that previewing needs audio hosting. It does not:
+   * the adapters already normalise every vendor to mono PCM, and a two-second clip
+   * wrapped in a WAV header is a `data:` URL the browser plays directly. Choosing a
+   * voice by reading its name is guesswork, and the alternative was to discover how
+   * a voice sounds on a live customer call.
+   *
+   * The clip is capped in both directions — input length and synthesis time — so a
+   * preview can never become a way to run a long, billable synthesis job.
    */
-  app.post('/workspaces/:id/voices/preview', (c) =>
-    c.json(
-      {
-        error: 'not_implemented',
-        message:
-          'Voice preview requires a configured TTS provider and audio hosting (Phase 2).',
-      },
-      501,
-    ),
-  );
+  app.post('/workspaces/:id/voices/preview', async (c) => {
+    const scope = c.get('scope');
+    require_(scope, 'agent:read');
+    const workspace = await container.services.workspaces.get(scope, c.req.param('id'));
+    const body = previewVoiceInput.parse(await c.req.json());
+
+    const credentials = (await container.services.providerCredentials.list(scope)).filter(
+      (cred) => cred.kind === 'tts',
+    );
+    const factories = new Map(ttsFactories().map((f) => [f.key, f]));
+
+    // Named provider, else the first connected TTS vendor this process can run —
+    // the same order the voice list uses, so the picker and the preview agree.
+    const credential = body.providerKey
+      ? credentials.find((cred) => cred.providerKey === body.providerKey)
+      : credentials.find((cred) => factories.has(cred.providerKey));
+
+    if (!credential) {
+      return c.json(
+        {
+          error: 'no_tts_provider',
+          message: body.providerKey
+            ? `${body.providerKey} is not connected in this workspace.`
+            : 'Connect a text-to-speech provider to preview voices.',
+        },
+        400,
+      );
+    }
+
+    const factory = factories.get(credential.providerKey);
+    if (!factory) {
+      return c.json(
+        {
+          error: 'preview_unsupported',
+          message:
+            `${catalogEntry(credential.providerKey)?.label ?? credential.providerKey} runs on the ` +
+            'call worker but cannot be previewed here yet. The voice still works on a call.',
+        },
+        400,
+      );
+    }
+
+    const secrets = await container.services.providerCredentials.resolverFor(scope);
+    const provider = await factory.create(factory.parseConfig(credential.config), {
+      secrets,
+      region: workspace.region,
+      logger: container.logger,
+    });
+
+    // A preview that hangs on an unresponsive vendor must end by itself; the client
+    // is waiting on this request.
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), PREVIEW_TIMEOUT_MS);
+    const chunks: AudioChunk[] = [];
+    try {
+      for await (const chunk of provider.stream({
+        text: body.text,
+        voiceId: body.voiceId,
+        language: body.language,
+        signal: abort.signal,
+      })) {
+        chunks.push(chunk);
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+
+    if (chunks.length === 0) {
+      return c.json(
+        {
+          error: 'preview_empty',
+          message: `${provider.label} returned no audio for voice ${body.voiceId}.`,
+        },
+        502,
+      );
+    }
+
+    return c.json({ audioUrl: wavDataUrl(chunks), provider: credential.providerKey });
+  });
 
   app.get('/workspaces/:id/lexicon', async (c) => {
     const scope = c.get('scope');

@@ -27,6 +27,7 @@ import type {
   Workspace,
   PhoneNumber,
   AvailableNumber,
+  NumberCarrierInfo,
   SearchNumbersQuery,
   PurchaseNumberInput,
   Campaign,
@@ -434,6 +435,25 @@ export interface AgentReadinessCheck {
   runnable: boolean;
   /** Where to get a key, for the "missing" path. */
   keyUrl?: string;
+  /**
+   * Providers of the same kind this workspace HAS connected.
+   *
+   * The usual reason a call is blocked is not a missing account — it is that the
+   * agent's pipeline still points at the defaults while the customer connected a
+   * different vendor. Naming what they already have turns "go buy Deepgram" into
+   * "change a dropdown".
+   */
+  alternatives?: Array<{ providerKey: string; label: string }>;
+  /**
+   * Permitted for this workspace's region and compliance posture.
+   *
+   * Distinct from `connected`: a key can be present, valid and runnable and still
+   * be refused — an EU-pinned workspace may not send audio to a US-processing
+   * vendor. The worker enforces this, so surfacing it here is what stops the call
+   * from dying silently after the browser has already joined.
+   */
+  eligible?: boolean;
+  ineligibleReasons?: Array<{ code: string; message: string }>;
 }
 
 export interface AgentReadiness {
@@ -442,6 +462,8 @@ export interface AgentReadiness {
   ready: boolean;
   requirements: AgentReadinessCheck[];
   warnings: AgentReadinessCheck[];
+  /** The workspace posture the eligibility verdict was computed against. */
+  residency?: { region: string; bloc: string };
 }
 
 export interface CallFilters {
@@ -479,14 +501,26 @@ export interface NumberListFilters {
 export const numberApi = {
   list: (workspaceId: string, filters: NumberListFilters = {}): Promise<Paginated<PhoneNumber>> =>
     get('/numbers', { ...filters }, workspaceId),
-  /** Upstream inventory available to purchase. Backend wraps the list in `{items}`. */
-  available: async (workspaceId: string, query: SearchNumbersQuery): Promise<AvailableNumber[]> => {
-    const res = await get<AvailableNumber[] | { items: AvailableNumber[] }>(
+  /**
+   * Upstream inventory available to purchase.
+   *
+   * The carrier comes back with the results because `simulated` changes what the
+   * results MEAN: with no carrier connected they are placeholder numbers that can
+   * never take a call, and the buy flow has to say so rather than presenting them
+   * as inventory.
+   */
+  available: async (
+    workspaceId: string,
+    query: SearchNumbersQuery,
+  ): Promise<{ items: AvailableNumber[]; carrier: NumberCarrierInfo | null }> => {
+    const res = await get<AvailableNumber[] | { items: AvailableNumber[]; carrier?: NumberCarrierInfo }>(
       '/numbers/available',
       { ...query, capabilities: query.capabilities?.join(',') },
       workspaceId,
     );
-    return Array.isArray(res) ? res : res.items;
+    return Array.isArray(res)
+      ? { items: res, carrier: null }
+      : { items: res.items, carrier: res.carrier ?? null };
   },
   byId: (id: string, workspaceId?: string): Promise<PhoneNumber> =>
     get(`/numbers/${id}`, undefined, workspaceId),
@@ -494,6 +528,9 @@ export const numberApi = {
     postScoped('/numbers', body, workspaceId),
   assign: (id: string, agentId: string | null, workspaceId?: string): Promise<PhoneNumber> =>
     postScoped(`/numbers/${id}/assign`, { agentId }, workspaceId),
+  /** Retry pointing the carrier's inbound voice path at us. Returns the new state. */
+  connectInbound: (id: string, workspaceId?: string): Promise<PhoneNumber> =>
+    postScoped(`/numbers/${id}/connect`, undefined, workspaceId),
   refreshReputation: (id: string, workspaceId?: string): Promise<PhoneNumber> =>
     postScoped(`/numbers/${id}/reputation/refresh`, undefined, workspaceId),
   release: (id: string, workspaceId?: string): Promise<void> =>
@@ -505,6 +542,26 @@ export interface CampaignListFilters {
   page?: number;
   pageSize?: number;
   search?: string;
+}
+
+export interface WorkspaceVoice {
+  id: string;
+  name: string;
+  language: string;
+  gender?: string;
+  providerKey: string;
+  providerLabel: string;
+  /** Vendor-hosted sample. Present for some vendors only. */
+  preview?: string;
+}
+
+export interface WorkspaceVoices {
+  items: WorkspaceVoice[];
+  /** Connected providers that failed to answer — say which, don't shrink the list silently. */
+  problems: Array<{ providerKey: string; label: string; reason: string }>;
+  /** Connected and usable on a call, but their voice list cannot be enumerated here. */
+  unlistable: Array<{ providerKey: string; label: string; reason: string }>;
+  connectedProviders: number;
 }
 
 export interface CampaignCompliancePreview {
@@ -525,6 +582,12 @@ export interface CampaignCompliancePreview {
   }>;
   notes: string[];
 }
+
+export const voiceApi = {
+  /** Live voices from every connected TTS provider, for the agent's voice picker. */
+  list: (workspaceId: string, language?: string): Promise<WorkspaceVoices> =>
+    get(`/workspaces/${workspaceId}/voices`, language ? { language } : undefined, workspaceId),
+};
 
 export const campaignApi = {
   list: (workspaceId: string, filters: CampaignListFilters = {}): Promise<Paginated<Campaign>> =>
@@ -742,6 +805,18 @@ export const providerApi = {
   /** LIVE — POST /v1/provider-credentials. Workspace-scoped. */
   create: (workspaceId: string, body: CreateCredentialInput): Promise<ProviderCredentialView> =>
     postScoped('/provider-credentials', body, workspaceId),
+  /**
+   * PATCH routing config in place (region, endpoint, deployment…). Rotation only
+   * ever changed secrets, so a credential predating a config field — Azure's
+   * `region` — had no way to gain it short of delete-and-recreate.
+   */
+  updateConfig: (
+    id: string,
+    config: Record<string, string>,
+    workspaceId?: string,
+  ): Promise<ProviderCredentialView> =>
+    patchScoped(`/provider-credentials/${id}`, { config }, workspaceId),
+
   /** LIVE — POST /v1/provider-credentials/:id/rotate. */
   rotate: (
     id: string,

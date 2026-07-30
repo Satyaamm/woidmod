@@ -3,11 +3,12 @@
 import { Tag, Tooltip } from 'antd';
 import type { ProviderCredentialStatus, ProviderKind } from '@/lib/contract';
 
-/** The three pipeline stages a BYOK credential can configure. */
+/** What a BYOK credential configures: a pipeline stage, or the carrier numbers sit on. */
 const KIND: Record<ProviderKind, { label: string; color: string; hint: string }> = {
   stt: { label: 'STT', color: 'geekblue', hint: 'Speech-to-text' },
   llm: { label: 'LLM', color: 'purple', hint: 'Language model' },
   tts: { label: 'TTS', color: 'cyan', hint: 'Text-to-speech' },
+  telephony: { label: 'CARRIER', color: 'gold', hint: 'Phone numbers — bought on your carrier account' },
 };
 
 export function ProviderKindTag({ kind }: { kind: ProviderKind }) {

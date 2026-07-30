@@ -19,7 +19,7 @@ import { and, asc, count, eq, ilike, ne } from 'drizzle-orm';
 
 import type { DbHandle } from '../../db/client.js';
 import { phoneNumbers } from '../../db/schema.js';
-import type { PhoneNumber } from '../../domain/telephony-schemas.js';
+import { phoneNumberSchema, type PhoneNumber } from '../../domain/telephony-schemas.js';
 import type { TenantScope, WorkspaceScope } from '../../domain/tenant.js';
 import type {
   PhoneNumberListOptions,
@@ -53,6 +53,20 @@ function toRow(number: PhoneNumber, orgId: string, workspaceId: string): NewRow 
     status: number.status as StatusColumn,
     data: number,
   };
+}
+
+/**
+ * Read side of the envelope.
+ *
+ * Rows written before a field existed do not have it, and for a jsonb envelope the
+ * schema's defaults ARE the migration: a number bought last month must still answer
+ * "is inbound connected?" with `pending` rather than `undefined`, which the UI would
+ * render as a crash. A row that cannot be parsed at all is returned untouched — one
+ * malformed record must not take down the whole list.
+ */
+function fromRow(data: PhoneNumber): PhoneNumber {
+  const parsed = phoneNumberSchema.safeParse(data);
+  return parsed.success ? parsed.data : data;
 }
 
 export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
@@ -99,7 +113,7 @@ export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
         .offset((page - 1) * pageSize);
 
       return {
-        items: rows.map((r) => r.data),
+        items: rows.map((r) => fromRow(r.data)),
         total: totals[0]?.n ?? 0,
         page,
         pageSize,
@@ -114,7 +128,7 @@ export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
         .from(phoneNumbers)
         .where(this.scoped(scope, numberId))
         .limit(1);
-      return rows[0]?.data ?? null;
+      return rows[0] ? fromRow(rows[0].data) : null;
     });
   }
 
@@ -132,7 +146,7 @@ export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
           ),
         )
         .limit(1);
-      return rows[0]?.data ?? null;
+      return rows[0] ? fromRow(rows[0].data) : null;
     });
   }
 
@@ -156,7 +170,7 @@ export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
         .returning();
       const row = rows[0];
       if (!row) throw new Error('insert returned no row');
-      return row.data;
+      return fromRow(row.data);
     });
   }
 
@@ -171,7 +185,7 @@ export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
         .from(phoneNumbers)
         .where(this.scoped(scope, numberId))
         .limit(1);
-      const current = existing[0]?.data;
+      const current = existing[0] ? fromRow(existing[0].data) : undefined;
       if (!current) throw new NotFoundError('phone number', numberId);
 
       // Identity + tenancy + E.164 are immutable, exactly as the memory repo does.
@@ -201,7 +215,7 @@ export class PostgresPhoneNumberRepository implements PhoneNumberRepository {
         .from(phoneNumbers)
         .where(this.scoped(scope, numberId))
         .limit(1);
-      const current = existing[0]?.data;
+      const current = existing[0] ? fromRow(existing[0].data) : undefined;
       if (!current) throw new NotFoundError('phone number', numberId);
 
       const released: PhoneNumber = {

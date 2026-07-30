@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { DeleteOutlined, PlusOutlined, SafetyCertificateOutlined, SyncOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined, SafetyCertificateOutlined, SyncOutlined, EditOutlined } from '@ant-design/icons';
 import { App, Button, Card, Empty, Flex, Popconfirm, Space, Table, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
@@ -23,6 +23,7 @@ export function ProviderCredentialsTable({
   refreshKey,
   onMutated,
   onRotate,
+  onEditConfig,
   onAdd,
 }: {
   workspaceId: string;
@@ -31,6 +32,8 @@ export function ProviderCredentialsTable({
   refreshKey: unknown;
   onMutated: () => void;
   onRotate: (credential: ProviderCredentialView) => void;
+  /** Edit routing config (region, endpoint…) without recreating the credential. */
+  onEditConfig: (credential: ProviderCredentialView) => void;
   onAdd: () => void;
 }) {
   const { message } = App.useApp();
@@ -151,6 +154,11 @@ export function ProviderCredentialsTable({
           </Tooltip>
           {canManage && (
             <>
+              <Tooltip title="Change routing — region, endpoint, deployment — without replacing the key">
+                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEditConfig(c)}>
+                  Edit
+                </Button>
+              </Tooltip>
               <Tooltip title="Replace the stored secret">
                 <Button size="small" type="text" icon={<SyncOutlined />} onClick={() => onRotate(c)}>
                   Rotate

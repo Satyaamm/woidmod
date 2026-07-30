@@ -79,14 +79,24 @@ function VoicesInner() {
    * player explains itself instead of failing.
    */
   const speak = useCallback(
-    async (text: string, voiceId = 'default', language = 'en-US'): Promise<PreviewResult> => {
+    async (
+      text: string,
+      voiceId = 'default',
+      language = 'en-US',
+      providerKey?: string,
+    ): Promise<PreviewResult> => {
       if (!workspaceId) return { kind: 'silent', reason: 'No workspace in scope.' };
-      const result = await voicesApi.preview(workspaceId, { text, voiceId, language });
+      const result = await voicesApi.preview(workspaceId, {
+        text,
+        voiceId,
+        language,
+        ...(providerKey ? { providerKey } : {}),
+      });
       if (result === null) {
         return {
           kind: 'silent',
           reason:
-            'No text-to-speech route is exposed yet (POST /v1/workspaces/:id/voices/preview), so there is nothing to play. The text shown above is exactly what the voice would receive.',
+            'This control plane does not expose voice preview (POST /v1/workspaces/:id/voices/preview), so there is nothing to play. The text shown above is exactly what the voice would receive.',
         };
       }
       if (result.mock) {
@@ -107,6 +117,9 @@ function VoicesInner() {
         'Thanks for calling — this is how I sound.',
         voice.id,
         voice.language,
+        // Synthesise with the vendor that issued the id, not whichever provider
+        // is connected first — the id is meaningless to any other one.
+        voice.providerKey,
       ),
     [speak],
   );
