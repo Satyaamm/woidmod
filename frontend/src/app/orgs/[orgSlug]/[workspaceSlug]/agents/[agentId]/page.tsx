@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { AudioOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { App, Button, Card, Col, Flex, Input, Modal, Row, Skeleton, Tabs, Tooltip, Typography } from 'antd';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
@@ -30,6 +30,10 @@ import { useSessionStore } from '@/stores/session-store';
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const scope = useScope();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // `?tab=` drives the active tab; Prompt when absent or unrecognised.
+  const tab = searchParams.get('tab') ?? 'prompt';
   const { message } = App.useApp();
   const canWrite = useSessionStore((s) => s.can('agent:write'));
   const canPublish = useSessionStore((s) => s.can('agent:publish'));
@@ -69,10 +73,22 @@ export default function AgentDetailPage() {
   const blockers = (readiness.data?.requirements ?? []).filter(
     (r) => !r.connected || !r.runnable,
   );
+  /*
+   * "Connect a provider first: Deepgram, Anthropic" was the wrong instruction for
+   * anyone who had already connected a different vendor — the block is this agent's
+   * pipeline selection, not their account. Name the swap where one is available.
+   */
+  const blockerText = blockers
+    .map((b) => {
+      const alt = b.alternatives?.[0];
+      const name = b.label ?? b.providerKey;
+      return alt ? `${name} → switch to ${alt.label}` : `${name} (connect it)`;
+    })
+    .join(' · ');
   const testTitle = !canTest
     ? 'Your role can’t place test calls'
     : blockers.length
-      ? `Connect a provider first: ${blockers.map((b) => b.label ?? b.providerKey).join(', ')}`
+      ? `This agent's pipeline points at providers you have not connected — ${blockerText}`
       : 'Talk to this agent in the browser';
 
   return (
@@ -145,8 +161,19 @@ export default function AgentDetailPage() {
             ))}
           </Row>
 
+          {/*
+            The active tab is URL-addressable (`?tab=pipeline`). Without it, anything
+            that wants to send someone to a specific tab — the readiness block saying
+            "edit the pipeline", a support reply, a bookmark — could only drop them on
+            Prompt and leave them hunting.
+          */}
           <Tabs
-            defaultActiveKey="prompt"
+            activeKey={tab}
+            onChange={(key) => {
+              const params = new URLSearchParams(Array.from(searchParams.entries()));
+              params.set('tab', key);
+              router.replace(`?${params.toString()}`, { scroll: false });
+            }}
             items={[
               {
                 key: 'prompt',

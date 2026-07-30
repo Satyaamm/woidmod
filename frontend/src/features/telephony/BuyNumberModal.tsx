@@ -2,11 +2,11 @@
 
 import { useState } from 'react';
 import { SearchOutlined } from '@ant-design/icons';
-import { App, Button, Flex, Input, Modal, Select, Table, Typography } from 'antd';
+import { Alert, App, Button, Flex, Input, Modal, Select, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { CountrySelect, countryName, flag } from '@/components/common/CountrySelect';
 import { numberApi } from '@/lib/api';
-import type { Agent, AvailableNumber } from '@/lib/contract';
+import type { Agent, AvailableNumber, NumberCarrierInfo } from '@/lib/contract';
 import { formatUsd } from '@/lib/format';
 import { CapabilityTags, numberTypeLabel } from './NumberTags';
 
@@ -36,12 +36,14 @@ export function BuyNumberModal({
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
 
   const [results, setResults] = useState<AvailableNumber[] | null>(null);
+  const [carrier, setCarrier] = useState<NumberCarrierInfo | null>(null);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [purchasing, setPurchasing] = useState(false);
 
   const reset = () => {
     setResults(null);
+    setCarrier(null);
     setSelected(null);
     setAreaCode('');
     setContains('');
@@ -57,12 +59,13 @@ export function BuyNumberModal({
     setSearching(true);
     setSelected(null);
     try {
-      const items = await numberApi.available(workspaceId, {
+      const { items, carrier: answering } = await numberApi.available(workspaceId, {
         country,
         areaCode: areaCode.trim() || undefined,
         contains: contains.trim() || undefined,
       });
       setResults(items);
+      setCarrier(answering);
       if (items.length === 0) message.info('No numbers available for that search.');
     } catch (err) {
       message.error((err as Error).message);
@@ -171,6 +174,24 @@ export function BuyNumberModal({
           Search
         </Button>
       </Flex>
+
+      {carrier?.simulated && (
+        /*
+         * Without a connected carrier the search is answered by the built-in mock,
+         * and these numbers do not exist. Buying one is a perfectly good way to try
+         * the product — it just has to be labelled, because the alternative is a
+         * customer who thinks they have a working phone number and does not.
+         */
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="Sample numbers — no carrier connected"
+          description="These are placeholders for trying the product; they cannot receive or place real calls. Connect Twilio or Telnyx under Settings → Providers to search real inventory."
+        />
+      )}
+
+
 
       {results && (
         <Table<AvailableNumber>

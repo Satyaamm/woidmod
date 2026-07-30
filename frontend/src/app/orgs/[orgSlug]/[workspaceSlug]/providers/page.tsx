@@ -13,6 +13,7 @@ import { useSessionStore } from '@/stores/session-store';
 import { AddCredentialModal } from '@/features/providers/AddCredentialModal';
 import { ProviderCredentialsTable } from '@/features/providers/ProviderCredentialsTable';
 import { RotateSecretsModal } from '@/features/providers/RotateSecretsModal';
+import { EditConfigModal } from '@/features/providers/EditConfigModal';
 
 export default function ProvidersPage() {
   const { workspace } = useCurrentScope();
@@ -21,6 +22,7 @@ export default function ProvidersPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [rotating, setRotating] = useState<ProviderCredentialView | null>(null);
+  const [editing, setEditing] = useState<ProviderCredentialView | null>(null);
   const bump = () => setRefreshKey((k) => k + 1);
 
   // The catalog is a small, static lookup shared by both modals (add + rotate).
@@ -47,6 +49,7 @@ export default function ProvidersPage() {
           refreshKey={refreshKey}
           onMutated={bump}
           onRotate={setRotating}
+          onEditConfig={setEditing}
           onAdd={() => setAddOpen(true)}
         />
       ) : (
@@ -65,6 +68,14 @@ export default function ProvidersPage() {
           }}
         />
       )}
+
+      <EditConfigModal
+        credential={editing}
+        catalog={catalog.data ?? []}
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        onSaved={bump}
+      />
 
       {workspace && rotating && (
         <RotateSecretsModal

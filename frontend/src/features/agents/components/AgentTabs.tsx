@@ -39,7 +39,9 @@ import { createStyles } from 'antd-style';
 import Link from 'next/link';
 import { AsyncBoundary } from '@/components/common/AsyncBoundary';
 import { useAsync } from '@/hooks/useAsync';
-import { agentApi } from '@/lib/api';
+import { VoicePreviewPlayer } from '@/components/common/VoicePreviewPlayer';
+import { voicesApi } from '@/features/voices/api';
+import { agentApi, overviewApi, voiceApi, type WorkspaceVoice } from '@/lib/api';
 import type {
   Agent,
   AgentVersion,
@@ -49,7 +51,7 @@ import type {
   ToolConfig,
 } from '@/lib/contract';
 import { formatMs, formatRelative } from '@/lib/format';
-import { useScope, wsPath } from '@/lib/scope';
+import { useScope, wsPath, useCurrentScope } from '@/lib/scope';
 
 const useStyles = createStyles(({ token, css }) => ({
   editor: css`
@@ -73,6 +75,9 @@ const useStyles = createStyles(({ token, css }) => ({
 // ---------------------------------------------------------------------------
 // Prompt
 // ---------------------------------------------------------------------------
+
+/** The line a voice preview speaks — a greeting, so it is judged on the job it does. */
+const PREVIEW_LINE = 'Thanks for calling — this is how I sound.';
 
 export function PromptTab({
   agent,
@@ -186,11 +191,55 @@ export function VoiceTab({
   editable: boolean;
 }) {
   const scope = useScope();
+  const { message } = App.useApp();
+  const { workspace } = useCurrentScope();
+  const [form] = Form.useForm<Agent['voice']>();
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [voiceId, setVoiceId] = useState(agent.voice.voiceId);
+
+  /*
+   * Real voices from every connected TTS provider.
+   *
+   * The field was a Select whose only option was the id already saved — a dropdown
+   * that could not select anything, showing a raw uuid. The endpoint to populate it
+   * has existed all along.
+   */
+  const voices = useAsync(
+    () => (workspace ? voiceApi.list(workspace.id, agent.language) : Promise.resolve(null)),
+    [workspace?.id, agent.language],
+  );
+
+  const grouped = (voices.data?.items ?? []).reduce<Record<string, WorkspaceVoice[]>>((acc, v) => {
+    (acc[v.providerLabel] ??= []).push(v);
+    return acc;
+  }, {});
+  const selected = (voices.data?.items ?? []).find((v) => v.id === voiceId);
+
+  const saveVoice = async () => {
+    const values = await form.validateFields();
+    setSaving(true);
+    try {
+      await agentApi.update(agent.id, { voice: { ...agent.voice, ...values } });
+      setDirty(false);
+      message.success('Voice saved. Publish the agent to put it on live calls.');
+    } catch (err) {
+      message.error((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <Row gutter={[12, 12]}>
       <Col xs={24} xl={12}>
         <Card size="small" title="Voice">
-          <Form layout="vertical" initialValues={agent.voice} disabled={!editable}>
+          <Form
+            form={form}
+            layout="vertical"
+            initialValues={agent.voice}
+            disabled={!editable}
+            onValuesChange={() => setDirty(true)}
+          >
             <Form.Item name="providerKey" label="Provider">
               <Select
                 options={(capabilities?.tts ?? []).map((o) => ({
@@ -199,13 +248,62 @@ export function VoiceTab({
                 }))}
               />
             </Form.Item>
-            <Form.Item name="voiceId" label="Voice">
+            <Form.Item
+              name="voiceId"
+              label="Voice"
+              extra={
+                selected
+                  ? `${selected.providerLabel} · ${selected.language}${selected.gender ? ` · ${selected.gender}` : ''}`
+                  : undefined
+              }
+            >
               <Select
                 showSearch
-                options={[{ value: agent.voice.voiceId, label: agent.voice.voiceId }]}
+                loading={voices.loading}
+                onChange={(v: string) => setVoiceId(v)}
+                // Searching a uuid is useless; people search by NAME.
+                optionFilterProp="label"
+                placeholder={
+                  voices.data?.connectedProviders === 0
+                    ? 'Connect a text-to-speech provider to list voices'
+                    : 'Search voices by name'
+                }
                 suffixIcon={<SoundOutlined />}
+                options={Object.entries(grouped).map(([providerLabel, list]) => ({
+                  label: providerLabel,
+                  options: list.map((v) => ({
+                    value: v.id,
+                    label: `${v.name} · ${v.language}${v.gender ? ` · ${v.gender}` : ''}`,
+                  })),
+                }))}
+                /*
+                 * A saved voice from a vendor that cannot be enumerated (Sarvam,
+                 * Inworld, Fish) is still valid — the call uses it. Free text keeps
+                 * it selectable instead of the picker silently dropping it.
+                 */
+                {...({ allowClear: true } as const)}
               />
             </Form.Item>
+
+            {voices.data?.unlistable?.length ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={`${voices.data.unlistable.map((u) => u.label).join(', ')}: voices can't be listed here`}
+                description="Type the voice id instead — Sarvam speaker, Inworld voice, or Fish Audio reference id. It works on the call either way."
+              />
+            ) : null}
+
+            {voices.data?.problems?.length ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={`Couldn't load voices from ${voices.data.problems.map((p) => p.label).join(', ')}`}
+                description={voices.data.problems.map((p) => p.reason).join(' · ')}
+              />
+            ) : null}
             <Form.Item name="speed" label="Speaking rate">
               <Slider min={0.6} max={1.6} step={0.05} marks={{ 0.6: 'slow', 1: 'natural', 1.6: 'fast' }} />
             </Form.Item>
@@ -224,16 +322,40 @@ export function VoiceTab({
               />
             </Form.Item>
             {/*
-              Preview is genuinely not built: `POST /workspaces/:id/voices/preview`
-              answers 501 because real synthesis needs a resolved BYOK provider and
-              somewhere to host the clip. A button that silently does nothing is
-              worse than one that says why, so it is disabled and labelled.
+              Preview prefers the VENDOR's own hosted sample — several return one
+              from listVoices, and it costs nothing to play. When there is none we
+              synthesise the line with this workspace's own credential, which is
+              the only way to hear the many voices that publish no sample at all.
             */}
-            <Tooltip title="Voice preview isn’t built yet — synthesis needs somewhere to host the clip. Use Test call to hear the voice on a real conversation.">
-              <Button icon={<PlayCircleOutlined />} disabled>
-                Preview voice
+            <Flex gap={8} align="center" wrap>
+              <VoicePreviewPlayer
+                disabled={!selected}
+                disabledReason="Pick a voice first."
+                label={selected ? selected.name : undefined}
+                onRequest={async () => {
+                  if (!selected) return { kind: 'silent' as const, reason: 'Pick a voice first.' };
+                  if (selected.preview) return { kind: 'audio' as const, url: selected.preview };
+                  if (!workspace) return { kind: 'silent' as const, reason: 'No workspace in scope.' };
+
+                  const spoken = await voicesApi.preview(workspace.id, {
+                    text: PREVIEW_LINE,
+                    voiceId: selected.id,
+                    language: selected.language || agent.language,
+                    // The id belongs to the vendor that issued it.
+                    providerKey: selected.providerKey,
+                  });
+                  return spoken
+                    ? { kind: 'audio' as const, url: spoken.audioUrl }
+                    : {
+                        kind: 'silent' as const,
+                        reason: `${selected.providerLabel} publishes no sample for this voice, and this control plane cannot synthesise one.`,
+                      };
+                }}
+              />
+              <Button type="primary" size="small" loading={saving} disabled={!editable || !dirty} onClick={saveVoice}>
+                Save voice
               </Button>
-            </Tooltip>
+            </Flex>
           </Form>
         </Card>
       </Col>
@@ -293,19 +415,6 @@ export function VoiceTab({
  * entry can point at a gateway serving models nobody here has heard of. A closed
  * dropdown would make "bring your own model" false.
  */
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  'anthropic-llm': ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4-1'],
-  'openai-llm': ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'],
-  'azure-openai-llm': ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1'],
-  'gemini-llm': ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'],
-  'groq-llm': ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-  'bedrock-llm': [
-    'anthropic.claude-3-5-sonnet-20240620-v1:0',
-    'us.anthropic.claude-3-5-haiku-20241022-v1:0',
-    'amazon.nova-lite-v1:0',
-  ],
-  'vertex-llm': ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'],
-};
 
 /**
  * Provider dropdown options, grouped by whether the workspace can actually use them.
@@ -401,12 +510,36 @@ export function PipelineTab({
   const [llmProvider, setLlmProvider] = useState(agent.pipeline.llmProvider);
   const p = agent.pipeline;
 
+  /*
+   * Budgets come from the control plane, not from here.
+   *
+   * This card carried its OWN table — 120/94/88/112, totalling 414 — while the
+   * analytics card used a different set totalling 392. Two numbers called "the
+   * budget", disagreeing, in one product. Neither was this workspace's: both were
+   * figures somebody typed into a component.
+   *
+   * Now there is one source (LATENCY_BUDGETS_MS, unset by default), and when it is
+   * unset this card shows the pipeline WITHOUT inventing targets for it.
+   */
+  const { workspace } = useCurrentScope();
+  const overview = useAsync(
+    () => (workspace ? overviewApi.get(workspace.id) : Promise.resolve(null)),
+    [workspace?.id],
+  );
+  const budgetFor = (key: string): number | null =>
+    overview.data?.latencyByStage.find((s) => s.key === key)?.budgetMs ?? null;
+
   const stages = [
-    { key: 'stt', label: 'Speech to text', value: p.sttProvider, budget: 120 },
-    { key: 'endpoint', label: 'Endpointing', value: p.endpointingStrategy, budget: 94 },
-    { key: 'llm', label: 'LLM', value: `${p.llmProvider} · ${p.llmModel}`, budget: 88 },
-    { key: 'tts', label: 'Text to speech', value: p.ttsProvider, budget: 112 },
+    { key: 'stt', label: 'Speech to text', value: p.sttProvider, budget: budgetFor('stt') },
+    { key: 'endpointing', label: 'Endpointing', value: p.endpointingStrategy, budget: budgetFor('endpointing') },
+    { key: 'llm', label: 'LLM', value: `${p.llmProvider} · ${p.llmModel}`, budget: budgetFor('llm') },
+    { key: 'tts', label: 'Text to speech', value: p.ttsProvider, budget: budgetFor('tts') },
   ];
+  const budgeted = stages.filter((s) => s.budget !== null);
+  const totalBudget = budgeted.length ? budgeted.reduce((sum, s) => sum + (s.budget ?? 0), 0) : null;
+  // Scale bars against the LARGEST configured budget, not a magic 420 that no
+  // longer matched anything once the numbers were configurable.
+  const widest = budgeted.reduce((max, s) => Math.max(max, s.budget ?? 0), 0);
 
   /** Vendors this workspace has no key for — named, so the warning is actionable. */
   const unconfigured = [
@@ -558,7 +691,23 @@ export function PipelineTab({
                     options={providerOptions(capabilities?.llm)}
                     optionFilterProp="title"
                     showSearch
-                    onChange={setLlmProvider}
+                    onChange={(value: string) => {
+                      setLlmProvider(value);
+                      /*
+                       * Clear a model that belonged to the previous vendor.
+                       *
+                       * Without this the field kept whatever was there — which is how
+                       * an agent on Azure OpenAI sat showing `claude-haiku-4-5`. Not
+                       * merely unhelpful: it is the value that would be sent.
+                       */
+                      const next =
+                        capabilities?.llm.find((o) => o.value === value)?.models ?? [];
+                      const current = form.getFieldValue('llmModel');
+                      if (current && !next.includes(current)) {
+                        form.setFieldValue('llmModel', next[0] ?? '');
+                        setDirty(true);
+                      }
+                    }}
                   />
                 </Form.Item>
               </Col>
@@ -570,7 +719,12 @@ export function PipelineTab({
                   rules={[{ required: true, message: 'Name the model to call' }]}
                 >
                   <AutoComplete
-                    options={(MODEL_SUGGESTIONS[llmProvider] ?? []).map((m) => ({ value: m }))}
+                    // Models follow the SELECTED provider, served by /capabilities.
+                    // The dashboard used to hold its own map, which never changed
+                    // with the provider — an Azure agent suggesting Claude models.
+                    options={(
+                      capabilities?.llm.find((o) => o.value === llmProvider)?.models ?? []
+                    ).map((m) => ({ value: m }))}
                     placeholder="e.g. gpt-4o-mini"
                     filterOption={(input, option) =>
                       (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
@@ -638,13 +792,13 @@ export function PipelineTab({
         */}
         <Card
           size="small"
-          title="Latency budget"
+          title={totalBudget === null ? 'Pipeline stages' : 'Latency budget'}
           extra={
-            <Tooltip title="Design targets for each stage of a turn. Measured latency is on the Analytics page.">
-              <Tag bordered={false}>
-                target {formatMs(stages.reduce((sum, s) => sum + s.budget, 0))}
-              </Tag>
-            </Tooltip>
+            totalBudget === null ? null : (
+              <Tooltip title="Design targets for each stage of a turn. Measured latency is on the Analytics page.">
+                <Tag bordered={false}>target {formatMs(totalBudget)}</Tag>
+              </Tooltip>
+            )
           }
         >
           <Flex vertical gap={12}>
@@ -653,7 +807,7 @@ export function PipelineTab({
                 <Flex justify="space-between" align="baseline">
                   <Typography.Text>{stage.label}</Typography.Text>
                   <Typography.Text className="tabular" type="secondary">
-                    {formatMs(stage.budget)} budget
+                    {stage.budget === null ? '' : `${formatMs(stage.budget)} budget`}
                   </Typography.Text>
                 </Flex>
                 <Tooltip title={stage.value}>
@@ -662,7 +816,10 @@ export function PipelineTab({
                       height: 6,
                       borderRadius: 3,
                       marginTop: 4,
-                      background: `linear-gradient(90deg, currentColor ${(stage.budget / 420) * 100}%, transparent 0)`,
+                      background:
+                        stage.budget === null || widest === 0
+                          ? 'transparent'
+                          : `linear-gradient(90deg, currentColor ${(stage.budget / widest) * 100}%, transparent 0)`,
                       opacity: 0.35,
                     }}
                   />

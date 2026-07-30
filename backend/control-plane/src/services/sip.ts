@@ -55,6 +55,27 @@ export interface OutboundCallInput {
   roomName: string;
   /** Agent dispatch metadata (agentId/workspaceId/mode/…) — same shape as a room session. */
   metadata: string;
+  /**
+   * Caller ID: which of the workspace's numbers the callee sees.
+   *
+   * Omitted, LiveKit falls back to the outbound trunk's own number — so every
+   * call from every workspace showed the same one, and the attestation, CNAM and
+   * reputation carried per number could never influence a live call. The number
+   * must belong to the trunk, which is why it is chosen from owned inventory.
+   */
+  fromNumber?: string;
+}
+
+/** The subset of `SIPInboundTrunkInfo` the platform actually reasons about. */
+export interface InboundTrunkSummary {
+  sipTrunkId: string;
+  name: string;
+  numbers: string[];
+}
+
+export interface DispatchRuleSummary {
+  sipDispatchRuleId: string;
+  trunkIds: string[];
 }
 
 export class SipService {
@@ -73,18 +94,67 @@ export class SipService {
     return (await res.json()) as T;
   }
 
-  /** One-time: create the inbound trunk that accepts calls to these numbers. */
+  /** Create the inbound trunk that accepts calls to these numbers. */
   createInboundTrunk(name: string, numbers: string[]): Promise<{ sipTrunkId: string }> {
     return this.twirp('CreateSIPInboundTrunk', { trunk: { name, numbers } });
   }
 
-  /** One-time: route inbound trunk calls into a per-call room + dispatch the agent. */
-  createDispatchRule(trunkIds: string[], roomPrefix = 'call-'): Promise<{ sipDispatchRuleId: string }> {
+  /** Trunks this project already has, so provisioning can converge instead of duplicate. */
+  async listInboundTrunks(): Promise<InboundTrunkSummary[]> {
+    const res = await this.twirp<{ items?: Array<{ sip_trunk_id?: string; name?: string; numbers?: string[] }> }>(
+      'ListSIPInboundTrunk',
+      {},
+    );
+    return (res.items ?? []).map((t) => ({
+      sipTrunkId: t.sip_trunk_id ?? '',
+      name: t.name ?? '',
+      numbers: t.numbers ?? [],
+    }));
+  }
+
+  /**
+   * Admit one more number on an existing trunk.
+   *
+   * `numbers.add` rather than a whole-trunk replace: two purchases landing at once
+   * must not have the second overwrite the first's number list.
+   */
+  async addInboundTrunkNumber(trunkId: string, e164: string): Promise<void> {
+    await this.twirp('UpdateSIPInboundTrunk', {
+      sip_trunk_id: trunkId,
+      update: { numbers: { add: [e164] } },
+    });
+  }
+
+  async listDispatchRules(): Promise<DispatchRuleSummary[]> {
+    const res = await this.twirp<{
+      items?: Array<{ sip_dispatch_rule_id?: string; trunk_ids?: string[] }>;
+    }>('ListSIPDispatchRule', {});
+    return (res.items ?? []).map((r) => ({
+      sipDispatchRuleId: r.sip_dispatch_rule_id ?? '',
+      trunkIds: r.trunk_ids ?? [],
+    }));
+  }
+
+  /**
+   * Route inbound trunk calls into a per-call room and dispatch the agent into it.
+   *
+   * Sent as `dispatch_rule` (the current field) rather than the deprecated
+   * top-level `rule`/`trunk_ids`/`room_config` trio this previously used.
+   */
+  createDispatchRule(
+    name: string,
+    trunkIds: string[],
+    agentName: string,
+    roomPrefix = 'call-',
+  ): Promise<{ sipDispatchRuleId: string }> {
     return this.twirp('CreateSIPDispatchRule', {
-      trunk_ids: trunkIds,
-      rule: { dispatch_rule_individual: { room_prefix: roomPrefix } },
-      // Dispatch our worker into the created room, same agent name the browser uses.
-      room_config: { agents: [{ agent_name: 'woidmod' }] },
+      dispatch_rule: {
+        name,
+        trunk_ids: trunkIds,
+        rule: { dispatch_rule_individual: { room_prefix: roomPrefix } },
+        // Dispatch our worker into the created room, same agent name the browser uses.
+        room_config: { agents: [{ agent_name: agentName }] },
+      },
     });
   }
 
@@ -106,11 +176,14 @@ export class SipService {
     return this.twirp('CreateSIPParticipant', {
       sip_trunk_id: input.trunkId,
       sip_call_to: input.toNumber,
+      // Empty is LiveKit's own "use the trunk's number", so an absent caller ID
+      // keeps the previous behaviour rather than needing a branch here.
+      sip_number: input.fromNumber ?? '',
       room_name: input.roomName,
       participant_identity: `caller-${input.toNumber}`,
       participant_metadata: input.metadata,
       // Route the callee's audio into a room the agent joins via the same dispatch.
-      room_config: { agents: [{ agent_name: 'woidmod', metadata: input.metadata }] },
+      room_config: { agents: [{ agent_name: config.LIVEKIT_AGENT_NAME, metadata: input.metadata }] },
     });
   }
 

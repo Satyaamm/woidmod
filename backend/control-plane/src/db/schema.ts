@@ -794,7 +794,10 @@ export const providerCredentials = pgTable(
     id: id(),
     orgId: text('org_id').notNull(),
     workspaceId: text('workspace_id'),
-    kind: text('kind').$type<'stt' | 'llm' | 'tts'>().notNull(),
+    // 'telephony' = a carrier account (Twilio, …). A carrier key is BYOK in the
+    // same sense as a model key; excluding it forced every tenant onto one
+    // platform-wide Twilio account set by env.
+    kind: text('kind').$type<'stt' | 'llm' | 'tts' | 'telephony'>().notNull(),
     providerKey: text('provider_key').notNull(),
     name: text('name').notNull(),
     config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),

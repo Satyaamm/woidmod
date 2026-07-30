@@ -82,6 +82,10 @@ export function platformRoutes(container: Container) {
           configured: configured.has(entry.key),
           runnable: entry.runnable,
           keyUrl: entry.keyUrl,
+          // Shipped so the agent's model picker follows the PROVIDER instead of a
+          // list hardcoded in the dashboard, which is how an Azure agent came to
+          // suggest Claude models.
+          models: entry.models ?? [],
           metadata: fromRegistry.get(entry.key)?.metadata ?? {},
         }));
 

@@ -18,7 +18,7 @@ import type {
   SearchNumbersQuery,
 } from '../../domain/telephony-schemas.js';
 import { availableNumberSchema } from '../../domain/telephony-schemas.js';
-import type { NumberProvider } from '../../services/number-service.js';
+import { CarrierError, type NumberProvider } from '../../services/number-service.js';
 
 const API = 'https://api.twilio.com/2010-04-01';
 
@@ -73,7 +73,7 @@ export class TwilioNumberProvider implements NumberProvider {
       headers: this.headers(),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) throw new Error(`Twilio search ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) this.fail(res.status, await res.text());
     const body = (await res.json()) as { available_phone_numbers?: TwilioAvailable[] };
 
     return (body.available_phone_numbers ?? []).map((n) =>
@@ -97,7 +97,7 @@ export class TwilioNumberProvider implements NumberProvider {
       body: new URLSearchParams({ PhoneNumber: e164 }),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!res.ok) throw new Error(`Twilio purchase ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) this.fail(res.status, await res.text());
     return { carrier: this.key, monthlyCostUsd: MONTHLY_COST_USD[country.toUpperCase()] ?? 1.5 };
   }
 
@@ -137,10 +137,34 @@ export class TwilioNumberProvider implements NumberProvider {
       body: new URLSearchParams({ VoiceUrl: voiceUrl, VoiceMethod: 'POST' }),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!res.ok) throw new Error(`Twilio VoiceUrl update ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) this.fail(res.status, await res.text());
   }
 
   /** Reputation is a separate analytics feed (Hiya/First Orion); unknown here → dialable. */
+
+  /**
+   * Turn a carrier HTTP failure into something the caller can act on.
+   *
+   * 401/403 is the customer's key — the single most common failure and the only
+   * one they can fix — so it is separated from "no numbers matched" and from the
+   * carrier simply being down.
+   */
+  private fail(status: number, body: string): never {
+    const reason =
+      status === 401 || status === 403
+        ? 'auth'
+        : status === 404
+          ? 'not_available'
+          : status >= 500
+            ? 'unreachable'
+            : 'rejected';
+    const detail =
+      reason === 'auth'
+        ? 'Twilio rejected the credentials — check the key stored under Settings → Providers.'
+        : body.slice(0, 200);
+    throw new CarrierError(detail, 'twilio', reason, status);
+  }
+
   async checkReputation(): Promise<{ status: ReputationStatus; score: number | null; sources: string[] }> {
     return { status: 'unknown' as ReputationStatus, score: null, sources: [] };
   }

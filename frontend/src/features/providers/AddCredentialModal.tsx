@@ -12,9 +12,11 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   stt: 'Speech-to-text',
   llm: 'Language models',
   tts: 'Text-to-speech',
+  telephony: 'Phone carriers',
 };
 
-const KIND_ORDER: ProviderKind[] = ['stt', 'llm', 'tts'];
+// Pipeline stages first, then carriers — the order someone sets a workspace up in.
+const KIND_ORDER: ProviderKind[] = ['stt', 'llm', 'tts', 'telephony'];
 
 interface FormShape {
   name: string;

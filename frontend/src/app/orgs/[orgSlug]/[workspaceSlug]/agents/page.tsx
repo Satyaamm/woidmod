@@ -73,11 +73,29 @@ export default function AgentsPage() {
             <Avatar shape="square" size={30} style={{ fontSize: 12, fontWeight: 600 }}>
               {agent.name.slice(0, 2).toUpperCase()}
             </Avatar>
-            <Flex vertical>
+            {/*
+              Both lines truncate. The description already did; the NAME did not,
+              and a 120-character name (the schema's limit) would stretch this column
+              and squeeze every metric to its right. Tooltips make the full text
+              reachable rather than merely cut off — an ellipsis with no way to read
+              the rest is a dead end, and descriptions run to 500 characters.
+              `minWidth: 0` is what actually lets a flex child shrink; without it the
+              ellipsis never engages inside a Flex row.
+            */}
+            <Flex vertical style={{ minWidth: 0, maxWidth: 340 }}>
               <Link href={wsPath(scope, 'agents', agent.id)} style={{ fontWeight: 550 }}>
-                {agent.name}
+                <Typography.Text
+                  ellipsis={{ tooltip: agent.name }}
+                  style={{ fontWeight: 550, color: 'inherit' }}
+                >
+                  {agent.name}
+                </Typography.Text>
               </Link>
-              <Typography.Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 340 }}>
+              <Typography.Text
+                type="secondary"
+                ellipsis={{ tooltip: agent.description }}
+                style={{ fontSize: 12 }}
+              >
                 {agent.description}
               </Typography.Text>
             </Flex>

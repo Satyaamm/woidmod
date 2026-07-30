@@ -45,6 +45,13 @@ export function providerRoutes(container: Container) {
   });
 
   /** Rotate secret fields in place, keeping the credential's identity and config. */
+  /** Edit routing config in place (region, endpoint, deployment name…). */
+  app.patch('/provider-credentials/:id', async (c) => {
+    const scope = requireWorkspace(c.get('scope'));
+    const body = z.object({ config: z.record(z.string()) }).parse(await c.req.json());
+    return c.json(await container.services.providerCredentials.updateConfig(scope, c.req.param('id'), body.config));
+  });
+
   app.post('/provider-credentials/:id/rotate', async (c) => {
     const scope = requireWorkspace(c.get('scope'));
     const { secrets } = rotateInput.parse(await c.req.json());

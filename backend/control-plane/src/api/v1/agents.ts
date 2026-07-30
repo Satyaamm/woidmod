@@ -19,6 +19,8 @@ import {
 import { flowSpecSchema, validateFlow } from '../../domain/flow-schema.js';
 import { requireWorkspace } from '../../domain/tenant.js';
 import { catalogEntry } from '../../providers/catalog.js';
+import { requirementsFor, checkEligibility } from '../../compliance/provider-eligibility.js';
+import { resolveTenantPosture } from '../../compliance/tenant-residency.js';
 
 export function agentRoutes(container: Container) {
   const app = new Hono<ApiEnv>();
@@ -49,16 +51,65 @@ export function agentRoutes(container: Container) {
   app.get('/agents/:id/readiness', async (c) => {
     const scope = requireWorkspace(c.get('scope'));
     const agent = await container.services.agents.get(scope, c.req.param('id'));
-    const configured = new Map(
-      (await container.services.providerCredentials.list(scope)).map((cr) => [cr.providerKey, cr.status]),
+    const credentialList = await container.services.providerCredentials.list(scope);
+    const configured = new Map(credentialList.map((cr) => [cr.providerKey, cr.status]));
+    const credentialConfigs = new Map(
+      credentialList.map((cr) => [cr.providerKey, cr.config as Record<string, unknown>]),
     );
 
-    const check = (capability: string, providerKey: string) => {
+    /**
+     * Other providers of the same kind this workspace HAS connected.
+     *
+     * Without this the block reads "connect deepgram-stt" to someone who already
+     * connected a perfectly good STT — the agent's pipeline simply still points at
+     * the default. Telling them to buy a second vendor to fix a dropdown is the
+     * wrong instruction, and it is the one they were getting.
+     */
+    const alternativesFor = (kind: 'stt' | 'llm' | 'tts', exclude: string) =>
+      [...configured.keys()]
+        .filter((key) => key !== exclude)
+        .map((key) => ({ key, entry: catalogEntry(key) }))
+        .filter((c) => c.entry?.kind === kind && c.entry.runnable)
+        .map((c) => ({ providerKey: c.key, label: c.entry?.label ?? c.key }));
+
+    /*
+     * The SAME residency check the worker runs before a call.
+     *
+     * Without it the browser joins the room, publishes audio, and the worker then
+     * refuses with `provider_ineligible` — a correct decision that reaches nobody,
+     * because the room simply disconnects. "I clicked Talk to your agent and nothing
+     * happened" is what that looks like from the outside. Running it here means the
+     * refusal is visible BEFORE connecting, with the reason attached.
+     */
+    const workspace = await container.services.workspaces.get(scope, scope.workspaceId);
+    const requirements = requirementsFor(workspace.region, workspace.compliance);
+
+    const check = (capability: string, kind: 'stt' | 'llm' | 'tts', providerKey: string) => {
       const status = configured.get(providerKey);
       const entry = catalogEntry(providerKey);
+      const credConfig = credentialConfigs.get(providerKey);
+      const resolved = resolveTenantPosture(
+        providerKey,
+        container.compliance.postures.get(providerKey),
+        credConfig,
+      );
+      const eligibility =
+        resolved.kind === 'region-missing'
+          ? {
+              eligible: false,
+              reasons: [
+                {
+                  code: 'residency_mismatch' as const,
+                  message: `set "${resolved.field}" on this credential — residency cannot be verified without it`,
+                },
+              ],
+            }
+          : checkEligibility(resolved.posture, requirements);
       return {
         capability,
         providerKey,
+        /** Connected alternatives — the agent can be pointed at one instead. */
+        alternatives: status === undefined ? alternativesFor(kind, providerKey) : [],
         label: entry?.label ?? providerKey,
         connected: status !== undefined,
         // 'invalid'/'expired' = present but the key failed verification — a soft warning.
@@ -75,24 +126,36 @@ export function agentRoutes(container: Container) {
          */
         runnable: entry?.runnable ?? true,
         keyUrl: entry?.keyUrl,
+        /**
+         * Permitted for THIS workspace's region and compliance posture. A connected,
+         * runnable provider can still be refused — an EU-pinned workspace may not
+         * send audio to a vendor processing in the US.
+         */
+        eligible: eligibility.eligible,
+        ineligibleReasons: eligibility.eligible ? [] : eligibility.reasons,
       };
     };
 
     // Every call needs STT + LLM + TTS. Video reuses the LLM credential for vision,
     // so it adds no separate provider requirement.
-    const requirements = [
-      check('Speech-to-text (STT)', agent.pipeline.sttProvider),
-      check('Language model (LLM)', agent.pipeline.llmProvider),
-      check('Text-to-speech (TTS)', agent.pipeline.ttsProvider),
+    const checks = [
+      check('Speech-to-text (STT)', 'stt', agent.pipeline.sttProvider),
+      check('Language model (LLM)', 'llm', agent.pipeline.llmProvider),
+      check('Text-to-speech (TTS)', 'tts', agent.pipeline.ttsProvider),
     ];
 
     return c.json({
       agentId: agent.id,
       modality: agent.modality,
-      requirements,
-      ready: requirements.every((r) => r.connected && r.runnable),
+      // The per-capability checklist. Named `checks` internally because
+      // `requirements` is the workspace's compliance posture in this scope — two
+      // different things that were one word apart and did get confused.
+      requirements: checks,
+      ready: checks.every((r) => r.connected && r.runnable && r.eligible),
       // At least one present-but-unverified/invalid key — call may still fail on a bad key.
-      warnings: requirements.filter((r) => r.connected && r.status !== 'valid' && r.status !== 'unverified'),
+      warnings: checks.filter((r) => r.connected && r.status !== 'valid' && r.status !== 'unverified'),
+      /** The workspace posture the eligibility verdict was computed against. */
+      residency: { region: workspace.region, bloc: requirements.bloc },
     });
   });
 

@@ -101,7 +101,7 @@ import { CallService } from './services/call-service.js';
 import { CallIngestService } from './services/call-ingest.js';
 import { TraceRecorder } from './services/trace-recorder.js';
 import { NumberService, MockNumberProvider } from './services/number-service.js';
-import { TwilioNumberProvider } from './providers/telephony/twilio.js';
+import { resolveCarrier } from './providers/telephony/registry.js';
 import { CampaignService } from './services/campaign-service.js';
 import { AuthService, resolveAuthSecrets } from './services/auth-service.js';
 import { MembershipService } from './services/membership-service.js';
@@ -129,6 +129,7 @@ import {
 import { MemoryLexiconRepository } from './services/lexicon.js';
 import { liveKitFromEnv, type LiveKitService } from './services/livekit.js';
 import { sipFromEnv, type SipService } from './services/sip.js';
+import { LiveKitInboundRouter } from './services/inbound-router.js';
 import { newId } from './domain/ids.js';
 // Phase 4 feature services (in-memory; self-contained verticals).
 import { createKnowledgeService, type KnowledgeService } from './services/knowledge-service.js';
@@ -164,6 +165,7 @@ import {
 } from './compliance/encryption.js';
 import { PostgresTenantKeyStore } from './compliance/postgres-key-store.js';
 import { ProviderPostureRegistry } from './compliance/provider-eligibility.js';
+import { capabilityPosture } from './compliance/tenant-residency.js';
 
 import type { PipelineEvents } from './orchestration/events.js';
 
@@ -383,6 +385,22 @@ export function createContainer(opts: ContainerOptions = {}): Container {
   // before `registerProviders`, which overwrites any key that does have a factory.
   for (const posture of CATALOG_ONLY_POSTURES) postures.register(posture);
 
+  /*
+   * Residency-dynamic vendors (Azure, Bedrock, Vertex, Google, Speechmatics)
+   * could never register a posture the normal way: registration derives postures
+   * from `parseConfig({})`, and their schemas REQUIRE config, so the parse threw,
+   * the catch swallowed it, and the eligibility gate refused them everywhere as
+   * `undeclared_posture` — which silently disabled the entire enterprise half of
+   * the catalog. Seed their capability postures here; the per-tenant bloc is
+   * enforced at readiness/call time from the credential's own region.
+   */
+  for (const key of [
+    'azure-openai-llm', 'azure-speech-stt', 'azure-tts',
+    'bedrock-llm', 'vertex-llm', 'google-stt', 'google-tts', 'speechmatics-stt',
+  ]) {
+    postures.register(capabilityPosture(key));
+  }
+
   // -- Fallback executors --------------------------------------------------
   // Timeouts are per-stage and tight: on a phone call a slow dependency is worse
   // than a failed one.
@@ -482,7 +500,34 @@ export function createContainer(opts: ContainerOptions = {}): Container {
   });
   // The call repository is passed so the agent list can derive its own
   // statistics from the call log rather than reporting stored zeros.
-  const agents = new AgentService(repositories.agents, repositories.workspaces, repositories.calls);
+  //
+  // The provider resolver is a CLOSURE, not a value: `providerCredentials` is
+  // constructed further down, and it only needs to exist by the time an agent is
+  // created — never at wiring time. Reordering the two would work equally well and
+  // is a larger edit than it looks, because the credential service depends on
+  // encryption which depends on the key store.
+  const agents = new AgentService(
+    repositories.agents,
+    repositories.workspaces,
+    repositories.calls,
+    async (scope) => {
+      const credentials = await providerCredentials.list(scope);
+      const byKind = { stt: [] as string[], llm: [] as string[], tts: [] as string[] };
+      // Catalog order, so the choice is deterministic rather than dependent on the
+      // order credentials happened to be added.
+      for (const entry of PROVIDER_CATALOG) {
+        if (!entry.runnable) continue; // a stored key with no plugin still cannot call
+        const cred = credentials.find((c) => c.providerKey === entry.key);
+        // 'invalid'/'expired' keys are deliberately skipped: defaulting a new agent
+        // to a credential we already know fails would recreate the same dead end.
+        if (!cred || cred.status === 'invalid' || cred.status === 'expired') continue;
+        // Only pipeline kinds seed an agent; a carrier is not a pipeline stage.
+        if (entry.kind === 'telephony') continue;
+        byKind[entry.kind].push(entry.key);
+      }
+      return byKind;
+    },
+  );
   const secrets = resolveAuthSecrets(logger);
 
   const memberships = new MembershipService({
@@ -519,23 +564,33 @@ export function createContainer(opts: ContainerOptions = {}): Container {
   // RAG vector store — a deployment choice (bring your own). 'memory' by default.
   const vectorStore = createVectorStore(vectorDbConfig(config));
 
-  // Per-workspace carrier: BYOK Twilio creds (stored via provider credentials) win,
-  // else the platform env pair, else null → the mock provider. This is what makes
-  // "search + buy a real number in-app" work once Twilio is connected.
-  const twilioProviderFor = async (scope: import('./domain/tenant.js').WorkspaceScope) => {
-    let sid: string | undefined;
-    let token: string | undefined;
-    try {
-      const resolver = await providerCredentials.resolverFor(scope);
-      sid = await resolver.get('twilio.accountSid').catch(() => undefined);
-      token = await resolver.get('twilio.authToken').catch(() => undefined);
-    } catch {
-      /* no stored creds — fall through to env */
-    }
-    sid = sid || config.TWILIO_ACCOUNT_SID;
-    token = token || config.TWILIO_AUTH_TOKEN;
-    return sid && token ? new TwilioNumberProvider(sid, token) : null;
+  /*
+   * Per-workspace carrier, resolved through the carrier registry rather than by
+   * name. The tenant's own account wins; the platform env pair is a last resort
+   * and reports itself as such, so "whose Twilio bought this number" is answerable
+   * rather than assumed.
+   */
+  const carrierFor = async (scope: import('./domain/tenant.js').WorkspaceScope) => {
+    const getSecret = async (name: string) => {
+      try {
+        const resolver = await providerCredentials.resolverFor(scope);
+        return await resolver.get(name).catch(() => undefined);
+      } catch {
+        return undefined;
+      }
+    };
+    return resolveCarrier(
+      getSecret,
+      { accountSid: config.TWILIO_ACCOUNT_SID, authToken: config.TWILIO_AUTH_TOKEN },
+      logger,
+      // Non-secret carrier routing (e.g. the Telnyx Connection id) lives on the
+      // same credential row as the key, so it comes from the same service.
+      (carrierKey) => providerCredentials.configFor(scope, 'telephony', carrierKey),
+    );
   };
+
+  const twilioProviderFor = async (scope: import('./domain/tenant.js').WorkspaceScope) =>
+    (await carrierFor(scope)).provider;
 
   // One chain instance: the campaign dialer and the manual outbound guard must
   // decide by the same rules, or "why was this call allowed" has two answers.
@@ -613,6 +668,20 @@ export function createContainer(opts: ContainerOptions = {}): Container {
   // One instance, shared by the services literal and the dialer's placeCall effect.
   const sipService = sipFromEnv();
 
+  /*
+   * Inbound has two halves — the carrier pointing at us, and LiveKit accepting the
+   * number — and the number service depends on the port, not on either vendor.
+   * Constructed even when SIP env is absent: it then reports WHICH setting is
+   * missing, which is more useful on a number than a silent null.
+   */
+  const inboundRouter = new LiveKitInboundRouter(
+    sipService,
+    config.PUBLIC_BASE_URL,
+    config.LIVEKIT_SIP_URI,
+    config.LIVEKIT_AGENT_NAME,
+    logger,
+  );
+
   const services = {
     workspaces,
     agents,
@@ -626,6 +695,7 @@ export function createContainer(opts: ContainerOptions = {}): Container {
       repositories.orgs,
       new MockNumberProvider(),
       twilioProviderFor,
+      inboundRouter,
     ),
     campaigns: new CampaignService(
       repositories.campaigns,
@@ -711,8 +781,23 @@ export function createContainer(opts: ContainerOptions = {}): Container {
           }
           const callId = newId('call');
           await sipService.createOutboundCall({
-            trunkId: request.trunkId || config.SIP_OUTBOUND_TRUNK_ID,
+            /*
+             * The LiveKit trunk, not the number's.
+             *
+             * `request.trunkId` is the number's LOGICAL trunk — a bucket key for
+             * per-trunk CPS limits, and for a bought number it is a value we
+             * generated (`trunk-us`). Passing it here as `sip_trunk_id` made every
+             * campaign call fail on an unknown trunk. Origination goes through the
+             * configured LiveKit outbound trunk; which number the callee sees is
+             * `fromNumber` below.
+             */
+            trunkId: config.SIP_OUTBOUND_TRUNK_ID,
             toNumber: request.toE164,
+            // The dialer already chose which owned number to originate from —
+            // rotation, local presence, reputation all feed that choice. It was
+            // being dropped here, so every campaign call showed the trunk's
+            // default number and none of that selection reached the callee.
+            fromNumber: request.fromE164,
             roomName: `call-${callId}`,
             metadata: JSON.stringify({
               agentId: request.agentId,

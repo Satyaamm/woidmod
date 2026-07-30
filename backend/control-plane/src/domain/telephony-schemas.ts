@@ -83,6 +83,19 @@ export const phoneNumberSchema = z.object({
   /** Agent that answers inbound on this number / dials outbound from it. */
   assignedAgentId: z.string().nullable().default(null),
   status: phoneNumberStatusSchema.default('active'),
+  /**
+   * Whether the carrier is actually pointing this number at us.
+   *
+   * Owning a number and RECEIVING calls on it are different facts, and the product
+   * conflated them: purchase never configured inbound routing, nothing in the UI
+   * could, and the number appeared "active" while every call to it went nowhere.
+   *   pending      — bought, not yet pointed at us
+   *   connected    — carrier voice path points here
+   *   unsupported  — carrier has no API for it (mock, or a manual-config carrier)
+   *   failed       — we tried and the carrier refused; `inboundError` says why
+   */
+  inbound: z.enum(['pending', 'connected', 'unsupported', 'failed']).default('pending'),
+  inboundError: z.string().max(300).nullable().default(null),
   purchasedAt: z.string().datetime(),
   releasedAt: z.string().datetime().nullable().default(null),
 });

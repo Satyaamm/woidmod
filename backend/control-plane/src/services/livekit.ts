@@ -164,7 +164,7 @@ export class LiveKitService {
       // session continues on the established connection afterwards.
       ttlSeconds: opts.ttlSeconds ?? 120,
       metadata: { userId: scope.userId, mode: opts.mode },
-      agents: [{ agentName: 'woidmod', metadata: dispatchMetadata }],
+      agents: [{ agentName: config.LIVEKIT_AGENT_NAME, metadata: dispatchMetadata }],
     });
 
     return {

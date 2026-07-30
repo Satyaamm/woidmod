@@ -215,6 +215,12 @@ export function TestConsole({ agent, onAgentChange }: { agent: Agent; onAgentCha
   const readinessState = useAsync(() => agentApi.readiness(agent.id), [agent.id]);
   const readiness = readinessState.data;
   const missingProviders = readiness?.requirements.filter((r) => !r.connected) ?? [];
+  /*
+   * Connected and runnable, but refused on residency. A different problem with a
+   * different fix, so it gets its own message instead of being lumped in with
+   * "not connected" — which would send the reader to add a key they already have.
+   */
+  const ineligible = readiness?.requirements.filter((r) => r.connected && r.eligible === false) ?? [];
   const blocked = isLive && readiness != null && !readiness.ready;
 
   const start = async () => {
@@ -334,19 +340,72 @@ export function TestConsole({ agent, onAgentChange }: { agent: Agent; onAgentCha
         <Alert
           showIcon
           type="error"
-          message="Connect providers before you can call"
+          message="This agent points at providers you have not connected"
           description={
             <>
-              This agent&rsquo;s pipeline needs these connected under{' '}
-              <b>Settings &rarr; Providers</b> first:
+              The block is the agent&rsquo;s <b>pipeline selection</b>, not your account: it is
+              still set to the defaults. Either connect these, or point the agent at a vendor
+              you already have.
               <ul style={{ margin: '8px 0 6px 18px' }}>
                 {missingProviders.map((r) => (
                   <li key={r.providerKey}>
-                    {r.capability} &mdash; <Typography.Text code>{r.providerKey}</Typography.Text> not connected
+                    {r.capability} &mdash; set to{' '}
+                    <Typography.Text code>{r.providerKey}</Typography.Text>, which is not connected
+                    {/*
+                      Naming what they already have turns "go buy another vendor" into
+                      "change a dropdown" — which is what the fix actually is.
+                    */}
+                    {r.alternatives && r.alternatives.length > 0 && (
+                      <>
+                        {' '}&mdash; you have{' '}
+                        {r.alternatives.map((a, i) => (
+                          <span key={a.providerKey}>
+                            {i > 0 && ', '}
+                            <b>{a.label}</b>
+                          </span>
+                        ))}{' '}
+                        connected; switch the pipeline to use it
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>
-              <Link href={wsPath(scope, 'providers')}>Connect providers &rarr;</Link>
+              {/* Straight to THIS agent's pipeline tab — the list was a dead end that
+                  made the reader find the agent again and guess which tab. */}
+              <Link href={`${wsPath(scope, 'agents', agent.id)}?tab=pipeline`}>
+                Edit this agent&rsquo;s pipeline &rarr;
+              </Link>
+              {'  ·  '}
+              <Link href={wsPath(scope, 'providers')}>Connect a provider &rarr;</Link>
+            </>
+          }
+        />
+      )}
+
+      {ineligible.length > 0 && (
+        <Alert
+          showIcon
+          type="error"
+          style={{ marginBottom: 12 }}
+          message="These providers are not permitted for this workspace"
+          description={
+            <>
+              This workspace is pinned to{' '}
+              <Typography.Text code>{readiness?.residency?.region}</Typography.Text>, so its data
+              must stay in the <b>{readiness?.residency?.bloc}</b> bloc. The call is refused before
+              it starts — without this notice the room simply disconnects and nothing explains why.
+              <ul style={{ margin: '8px 0 6px 18px' }}>
+                {ineligible.map((r) => (
+                  <li key={r.providerKey}>
+                    {r.capability} &mdash; <Typography.Text code>{r.providerKey}</Typography.Text>:{' '}
+                    {r.ineligibleReasons?.map((x) => x.message).join(' · ') ?? 'not permitted here'}
+                  </li>
+                ))}
+              </ul>
+              Set the provider&rsquo;s region on its credential if the resource really is in this
+              bloc, or point the agent at a vendor that is.
+              <br />
+              <Link href={wsPath(scope, 'providers')}>Edit provider credentials &rarr;</Link>
             </>
           }
         />

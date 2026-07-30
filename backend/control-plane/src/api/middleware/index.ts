@@ -18,6 +18,7 @@ import {
 } from '../../domain/tenant.js';
 import { ConflictError, NotFoundError } from '../../repositories/types.js';
 import { RoleError } from '../../domain/permissions.js';
+import { CarrierError } from '../../services/number-service.js';
 
 /** Request-scoped variables, populated by `tenantContext`. */
 export type Vars = {
@@ -75,6 +76,22 @@ export function errorHandler(container: Container) {
     }
     if (err instanceof NotFoundError) {
       return c.json({ error: 'not_found', message: err.message }, 404);
+    }
+    /*
+     * A carrier said no. Mapped HERE rather than in the telephony router because
+     * this is the one place domain errors become HTTP, and a router-local handler
+     * only covers the routes someone remembered to wrap — number search reached
+     * the global handler and returned `internal_error 500` for a wrong Twilio SID,
+     * which reads as our fault and offers no next step.
+     *
+     * 400 when the customer's credential is the problem (they can fix it), 502
+     * when the carrier itself failed us (they cannot).
+     */
+    if (err instanceof CarrierError) {
+      return c.json(
+        { error: err.code, carrier: err.carrier, reason: err.reason, message: err.message },
+        err.reason === 'auth' ? 400 : 502,
+      );
     }
     if (err instanceof ConflictError) {
       return c.json({ error: 'conflict', message: err.message }, 409);
