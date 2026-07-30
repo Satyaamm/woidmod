@@ -97,11 +97,15 @@ losing context, or starting a new session.
 - **Versioned agents** — publish, diff, roll back.
 
 ### Bring your own keys (BYOK)
-- Connect **your own** LLM, speech-to-text and text-to-speech accounts — **21
-  providers**, every one of which the call worker can actually run: Anthropic,
-  OpenAI, Google Gemini/Vertex, **Azure OpenAI**, **AWS Bedrock**, Groq; Deepgram,
-  AssemblyAI, Cartesia Ink, Azure/Google Speech, Speechmatics, Soniox; Cartesia,
-  ElevenLabs, Rime, OpenAI/Azure/Google TTS.
+- Connect **your own** LLM, speech-to-text and text-to-speech accounts — **25
+  providers**, plus **2 phone carriers**: Anthropic, OpenAI, Google Gemini/Vertex,
+  **Azure OpenAI / AI Foundry**, **AWS Bedrock**, Groq; Deepgram, AssemblyAI,
+  Cartesia Ink, Azure/Google Speech, Speechmatics, Soniox, Sarvam; Cartesia,
+  ElevenLabs, Rime, Inworld, Fish Audio, Sarvam, PlayHT, OpenAI/Azure/Google TTS;
+  Twilio and Telnyx for numbers.
+- The catalog says which of them the call worker can **run**, not just store. One
+  vendor (PlayHT) is currently storable and testable but not runnable, and it says
+  so in the dropdown — the alternative is a caller sitting in silence.
 - **Any OpenAI-compatible gateway** counts as one more: point the OpenAI provider's
   base URL at LiteLLM, OpenRouter, Together, Fireworks, vLLM or Ollama and run a
   model this list has never heard of.
@@ -244,6 +248,11 @@ country**.
 encrypted per tenant, and added in the dashboard under **Providers** — there is no
 platform key pool. A call needs one of each:
 
+| Stage | Cheapest way to get going |
+|---|---|
+| Speech-to-text | Deepgram or AssemblyAI (both give free credit) |
+| Language model | Groq or Google AI Studio (both have a free tier) |
+| Text-to-speech | Cartesia, or OpenAI if you already have a key |
 
 Hit **Test connection** in the credential form — it calls the vendor and names the
 field that's wrong before anything is saved. Then pick the providers on your agent's
@@ -253,6 +262,29 @@ field that's wrong before anything is saved. Then pick the providers on your age
 with the well-known dev key pair already in `.env.example`. A LiveKit Cloud project is
 only needed for real phone numbers (SIP).
 
+### Phone numbers
+
+Carriers are BYOK too. Connect **Twilio** or **Telnyx** under **Providers** and the
+number search switches from sample inventory to your carrier's real numbers, bought
+on your account. Without one, search still works and is labelled as samples — they
+cannot take a call.
+
+Buying a number wires inbound in the same step: it is admitted on the LiveKit SIP
+trunk (created on first use), a dispatch rule routes it into a room with your agent,
+and the carrier's voice path is pointed back here. The number then shows **Inbound
+live**; anything else names what is missing and offers a retry. These settings have to
+exist for that to complete:
+
+| Setting | Needed for |
+| --- | --- |
+| `PUBLIC_BASE_URL` | Where the carrier reaches this API (`/telephony/twiml/inbound`) |
+| `LIVEKIT_SIP_URI` | The LiveKit SIP host an inbound call is forwarded to |
+| `SIP_OUTBOUND_TRUNK_ID` | Placing outbound calls; the number you pick is the caller ID |
+
+Telnyx routes inbound through a **Connection** rather than a per-number webhook, so
+paste its id into the Telnyx credential's `connectionId` field — the number reports
+that as its next action until you do.
+
 ## Project layout
 
 ```
@@ -260,7 +292,7 @@ backend/
   control-plane/   TypeScript API — tenancy, RBAC, BYOK, compliance, agents, flows,
     src/api/       HTTP surface (auth at the root, everything else under /v1)
     src/services/  agents, calls, campaigns, knowledge, tools, evals, telephony, billing
-    src/providers/ 21 vendor adapters, the BYOK catalog, and live credential probes
+    src/providers/ 27 vendor adapters, the BYOK catalog, and live credential probes
     src/compliance/ audit log, encryption, PII, eligibility, data-subject rights
     src/i18n/      locales + per-language verbalization (numbers, money, dates)
     src/db/        migrations and row-level-security policies
@@ -272,6 +304,44 @@ docker-compose.yml Postgres · Redis · MinIO · LiveKit
 .env               single config file for all three services
 ```
 
+
+## Security
+
+**Nothing in this repository is a real credential.** `.env` is git-ignored; the only
+tracked env file is `.env.example`, and every value in it is a local-development
+placeholder. Provider keys are never stored in files at all — they are entered in the
+dashboard and encrypted per tenant.
+
+The dev defaults are deliberately weak so `./start.sh` works with no setup. **Replace
+all of these before exposing the stack to anything but localhost:**
+
+| Setting | Why | Replace with |
+|---|---|---|
+| `AUTH_SESSION_SECRET`, `AUTH_HASH_PEPPER` | Session forgery / offline hash attacks | `openssl rand -hex 32` each |
+| `KMS_MASTER_KEY` | Wraps every tenant's data key — the zero key protects nothing | A real KMS (AWS/GCP/Vault Transit); leave the variable empty |
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | `devkey`/`secret` is LiveKit's published dev pair — anyone can mint room tokens | Keys from your own LiveKit project |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | MinIO dev credentials | Scoped S3/R2 keys |
+| `AUTH_EXPOSE_CODES` | Returns the signup verification code in the API response | `0`, or remove it |
+| `DATABASE_URL`, `REDIS_URL` | Default local passwords | Managed instances with real credentials |
+
+Also required in production: TLS in front of the API, so `PUBLIC_BASE_URL` is
+`https://` — carriers fetch call control from it over the public internet — and
+Postgres row-level security left enabled, which is what keeps one tenant's rows
+unreadable to another.
+
+One endpoint is public by design: `/telephony/twiml/inbound`, which a carrier fetches
+on an incoming call. It is unauthenticated and returns the same static call-control
+document to anyone, so it carries no tenant data — but it does disclose your LiveKit
+SIP host, and it is not yet carrier-signature-validated. Treat the SIP host as public,
+and rely on the trunk's own number allow-list to decide which calls are accepted.
+
+CI blocks the obvious mistakes — a committed `.env`, a private key, or a credential
+pattern in a diff — but a scanner is a backstop, not the control. Keep secrets in your
+deployment's secret manager.
+
+**Reporting a vulnerability:** open a private advisory under the repository's
+**Security → Report a vulnerability** tab. Please don't file a public issue for
+anything exploitable, and don't include real customer data or live keys in the report.
 
 ## Contributing
 
